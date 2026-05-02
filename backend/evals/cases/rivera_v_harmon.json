@@ -1,0 +1,135 @@
+{
+  "case_id": "rivera_v_harmon_msj",
+  "documents": [
+    {
+      "document_id": "msj",
+      "display_name": "Motion for Summary Judgment",
+      "role": "brief",
+      "text_path": "backend/documents/motion_for_summary_judgment.txt"
+    },
+    {
+      "document_id": "police",
+      "display_name": "Police Report",
+      "role": "record",
+      "text_path": "backend/documents/police_report.txt"
+    },
+    {
+      "document_id": "medical",
+      "display_name": "Medical Records Excerpt",
+      "role": "record",
+      "text_path": "backend/documents/medical_records_excerpt.txt"
+    },
+    {
+      "document_id": "witness",
+      "display_name": "Witness Statement",
+      "role": "record",
+      "text_path": "backend/documents/witness_statement.txt"
+    }
+  ],
+  "expected_findings": [
+    {
+      "finding_type": "citation",
+      "cite_substring": "Whitmore v. Delgado Scaffolding Co.",
+      "verdict": ["unsupported", "could_not_verify"],
+      "note": "Fabricated case - 334 F. Supp. 2d 1189 does not match this case in CourtListener."
+    },
+    {
+      "finding_type": "citation",
+      "cite_substring": "Kellerman v. Pacific Coast Construction",
+      "verdict": ["unsupported", "could_not_verify"],
+      "note": "Fabricated. 887 F.2d is a 1989 volume but the brief cites it as 1991 - classic LLM-generated cite signature."
+    },
+    {
+      "finding_type": "citation",
+      "cite_substring": "Torres v. Granite Falls Dev. Corp.",
+      "verdict": ["unsupported", "could_not_verify"],
+      "note": "Fabricated string-cite from footnote 1."
+    },
+    {
+      "finding_type": "citation",
+      "cite_substring": "Blackwell v. Sunrise Contractors",
+      "verdict": ["unsupported", "could_not_verify"],
+      "note": "Fabricated string-cite from footnote 1."
+    },
+    {
+      "finding_type": "citation",
+      "cite_substring": "Dixon v. Lone Star Structural",
+      "verdict": ["unsupported", "could_not_verify"],
+      "note": "Fabricated string-cite from footnote 1."
+    },
+    {
+      "finding_type": "citation",
+      "cite_substring": "Okafor v. Brightline Builders",
+      "verdict": ["unsupported", "could_not_verify"],
+      "note": "Fabricated string-cite from footnote 1."
+    },
+    {
+      "finding_type": "citation",
+      "cite_substring": "Nguyen v. Allied Pacific Construction",
+      "verdict": ["unsupported", "could_not_verify"],
+      "note": "Fabricated string-cite from footnote 1."
+    },
+    {
+      "finding_type": "citation",
+      "cite_substring": "Reeves v. Summit Engineering Group",
+      "verdict": ["unsupported", "could_not_verify"],
+      "note": "Fabricated string-cite from footnote 1."
+    },
+    {
+      "finding_type": "citation",
+      "cite_substring": "Privette v. Superior Court",
+      "verdict": ["contradicted", "unsupported"],
+      "note": "Privette is a real case. The brief attributes the verbatim quote 'A hirer is never liable...' to it; that quote does not appear in the opinion and overstates the rule. Either contradicted (real case, fake quote) or unsupported (cite real, proposition wrong)."
+    },
+    {
+      "finding_type": "consistency",
+      "claim_substring": "March 14, 2021",
+      "verdict": ["contradicted"],
+      "expected_evidence_doc": "police",
+      "note": "MSJ says incident was March 14, 2021. Police report, medical records, and witness statement all say March 12, 2021."
+    },
+    {
+      "finding_type": "consistency",
+      "claim_substring": "not wearing required personal protective equipment",
+      "verdict": ["contradicted"],
+      "expected_evidence_doc": "police",
+      "note": "MSJ asserts Rivera wasn't wearing PPE. Police report confirms he was wearing a hard hat and harness; witness statement adds high-visibility vest."
+    }
+  ],
+  "expected_supported": [
+    {
+      "finding_type": "consistency",
+      "claim_substring": "Apex Staffing Solutions",
+      "expected_evidence_doc": "police",
+      "note": "Police report names Apex Staffing Solutions as Rivera's employer. The pipeline should emit a `supported` finding pointing at the police report."
+    },
+    {
+      "finding_type": "consistency",
+      "claim_substring": "2200 West Olympic Boulevard",
+      "expected_evidence_doc": "police",
+      "note": "Police report names the same site address. Pipeline should emit `supported` pointing at the police report."
+    },
+    {
+      "finding_type": "citation",
+      "cite_substring": "California Code of Civil Procedure Section 335.1",
+      "note": "Real California statute. Brief's two-year statute-of-limitations proposition is correct. The citation verifier should emit `supported`."
+    }
+  ],
+  "expected_undisputed": [
+    {
+      "finding_type": "consistency",
+      "claim_substring": "March 10, 2023",
+      "note": "Filing date is internal to the brief; no record document mentions filing dates. Pipeline should emit `undisputed`."
+    },
+    {
+      "finding_type": "consistency",
+      "claim_substring": "eight years of experience",
+      "note": "Rivera's experience level is asserted in the brief and not addressed by any record document. Pipeline should emit `undisputed`."
+    },
+    {
+      "finding_type": "consistency",
+      "claim_substring": "February 26, 2021",
+      "note": "OSHA inspection date is asserted in the brief; no record document mentions OSHA inspections. Pipeline should emit `undisputed`."
+    }
+  ]
+}
