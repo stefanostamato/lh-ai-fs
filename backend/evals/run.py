@@ -128,16 +128,17 @@ async def run_case(
 def _format_metrics(case_id: str, m: Metrics) -> str:
     return (
         f"  {case_id}\n"
-        f"    precision         : {m.precision:.2f}\n"
-        f"    recall            : {m.recall:.2f}\n"
-        f"    hallucination_rate: {m.hallucination_rate:.2f}\n"
-        f"    tn_rate           : {m.tn_rate:.2f}\n"
+        f"    precision           : {m.precision:.2f}\n"
+        f"    recall              : {m.recall:.2f}\n"
+        f"    hallucination_rate  : {m.hallucination_rate:.2f}\n"
+        f"    tn_rate             : {m.tn_rate:.2f}\n"
+        f"    fabrication_detection: {m.fabrication_detection_rate:.2f}\n"
         f"    findings (TP/FP/FN/TN/total): "
         f"{m.true_positives}/{m.false_positives}/{m.false_negatives}/"
         f"{m.true_negatives}/{m.total_findings}\n"
-        f"    hallucinations    : {m.hallucinations}\n"
-        f"    cost_usd          : ${m.cost_usd:.4f}\n"
-        f"    latency_ms        : {m.latency_ms}"
+        f"    hallucinations      : {m.hallucinations}\n"
+        f"    cost_usd            : ${m.cost_usd:.4f}\n"
+        f"    latency_ms          : {m.latency_ms}"
     )
 
 
@@ -150,6 +151,7 @@ def _aggregate(per_case: list[tuple[str, Metrics]]) -> Metrics:
             recall=1.0,
             hallucination_rate=0.0,
             tn_rate=1.0,
+            fabrication_detection_rate=1.0,
             total_findings=0,
             true_positives=0,
             false_positives=0,
@@ -157,6 +159,8 @@ def _aggregate(per_case: list[tuple[str, Metrics]]) -> Metrics:
             missed_true_negatives=0,
             true_negatives=0,
             hallucinations=0,
+            fabrication_targets=0,
+            fabrications_caught=0,
             cost_usd=0.0,
             latency_ms=0,
         )
@@ -168,6 +172,8 @@ def _aggregate(per_case: list[tuple[str, Metrics]]) -> Metrics:
     missed_tn = sum(m.missed_true_negatives for _, m in per_case)
     hallucinations = sum(m.hallucinations for _, m in per_case)
     total = sum(m.total_findings for _, m in per_case)
+    fab_targets = sum(m.fabrication_targets for _, m in per_case)
+    fab_caught = sum(m.fabrications_caught for _, m in per_case)
     cost = sum(m.cost_usd for _, m in per_case)
     latency = sum(m.latency_ms for _, m in per_case)
 
@@ -175,12 +181,14 @@ def _aggregate(per_case: list[tuple[str, Metrics]]) -> Metrics:
     recall = tp / (tp + fn) if (tp + fn) else 1.0
     hr = hallucinations / total if total else 0.0
     tn_rate = tn / (tn + missed_tn) if (tn + missed_tn) else 1.0
+    fab_rate = fab_caught / fab_targets if fab_targets else 1.0
 
     return Metrics(
         precision=precision,
         recall=recall,
         hallucination_rate=hr,
         tn_rate=tn_rate,
+        fabrication_detection_rate=fab_rate,
         total_findings=total,
         true_positives=tp,
         false_positives=fp,
@@ -188,6 +196,8 @@ def _aggregate(per_case: list[tuple[str, Metrics]]) -> Metrics:
         missed_true_negatives=missed_tn,
         true_negatives=tn,
         hallucinations=hallucinations,
+        fabrication_targets=fab_targets,
+        fabrications_caught=fab_caught,
         cost_usd=cost,
         latency_ms=latency,
     )
@@ -239,6 +249,7 @@ def _append_history(case_id: str, scope: str, m: Metrics) -> None:
         "recall": m.recall,
         "hallucination_rate": m.hallucination_rate,
         "tn_rate": m.tn_rate,
+        "fabrication_detection_rate": m.fabrication_detection_rate,
         "total_findings": m.total_findings,
         "true_positives": m.true_positives,
         "false_positives": m.false_positives,
@@ -246,6 +257,8 @@ def _append_history(case_id: str, scope: str, m: Metrics) -> None:
         "missed_true_negatives": m.missed_true_negatives,
         "true_negatives": m.true_negatives,
         "hallucinations": m.hallucinations,
+        "fabrication_targets": m.fabrication_targets,
+        "fabrications_caught": m.fabrications_caught,
         "cost_usd": m.cost_usd,
         "latency_ms": m.latency_ms,
     }

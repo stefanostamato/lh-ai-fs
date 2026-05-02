@@ -31,54 +31,63 @@
       "finding_type": "citation",
       "cite_substring": "Whitmore v. Delgado Scaffolding Co.",
       "verdict": ["unsupported", "could_not_verify"],
+      "expected_lookup_status": ["not_found"],
       "note": "Fabricated case - 334 F. Supp. 2d 1189 does not match this case in CourtListener."
     },
     {
       "finding_type": "citation",
       "cite_substring": "Kellerman v. Pacific Coast Construction",
       "verdict": ["unsupported", "could_not_verify"],
+      "expected_lookup_status": ["not_found"],
       "note": "Fabricated. 887 F.2d is a 1989 volume but the brief cites it as 1991 - classic LLM-generated cite signature."
     },
     {
       "finding_type": "citation",
       "cite_substring": "Torres v. Granite Falls Dev. Corp.",
       "verdict": ["unsupported", "could_not_verify"],
+      "expected_lookup_status": ["not_found"],
       "note": "Fabricated string-cite from footnote 1."
     },
     {
       "finding_type": "citation",
       "cite_substring": "Blackwell v. Sunrise Contractors",
       "verdict": ["unsupported", "could_not_verify"],
+      "expected_lookup_status": ["not_found"],
       "note": "Fabricated string-cite from footnote 1."
     },
     {
       "finding_type": "citation",
       "cite_substring": "Dixon v. Lone Star Structural",
       "verdict": ["unsupported", "could_not_verify"],
+      "expected_lookup_status": ["not_found"],
       "note": "Fabricated string-cite from footnote 1."
     },
     {
       "finding_type": "citation",
       "cite_substring": "Okafor v. Brightline Builders",
       "verdict": ["unsupported", "could_not_verify"],
+      "expected_lookup_status": ["not_found"],
       "note": "Fabricated string-cite from footnote 1."
     },
     {
       "finding_type": "citation",
       "cite_substring": "Nguyen v. Allied Pacific Construction",
       "verdict": ["unsupported", "could_not_verify"],
+      "expected_lookup_status": ["not_found"],
       "note": "Fabricated string-cite from footnote 1."
     },
     {
       "finding_type": "citation",
       "cite_substring": "Reeves v. Summit Engineering Group",
       "verdict": ["unsupported", "could_not_verify"],
+      "expected_lookup_status": ["not_found"],
       "note": "Fabricated string-cite from footnote 1."
     },
     {
       "finding_type": "citation",
       "cite_substring": "Privette v. Superior Court",
       "verdict": ["contradicted", "unsupported"],
+      "expected_lookup_status": ["found"],
       "note": "Privette is a real case. The brief attributes the verbatim quote 'A hirer is never liable...' to it; that quote does not appear in the opinion and overstates the rule. Either contradicted (real case, fake quote) or unsupported (cite real, proposition wrong)."
     },
     {

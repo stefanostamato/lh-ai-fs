@@ -49,6 +49,15 @@ class ExpectedFinding(BaseModel):
         description="Any of these verdicts on the actual finding satisfies the label.",
     )
     expected_evidence_doc: str | None = None
+    expected_lookup_status: list[
+        Literal["found", "not_found", "ambiguous", "lookup_failed"]
+    ] = Field(
+        default_factory=list,
+        description=(
+            "When non-empty, only matches a citation finding whose "
+            "lookup.lookup_status is in this list. No-op on consistency findings."
+        ),
+    )
     note: str | None = None
 
 

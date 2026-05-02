@@ -9,7 +9,9 @@ The matching rules are:
   the actual finding.
 - For `ExpectedFinding`: the actual finding's verdict must be one of the
   `verdict` list (any-of). If `expected_evidence_doc` is set it must equal
-  the actual finding's `evidence_span.document_id`.
+  the actual finding's `evidence_span.document_id`. If
+  `expected_lookup_status` is set and the finding is a citation, the
+  actual `lookup.lookup_status` must be in that list.
 - For `ExpectedSupported`: the actual finding's verdict must be `supported`.
   If `expected_evidence_doc` is set it must equal the evidence_span doc.
 - For `ExpectedUndisputed`: the actual finding's verdict must be
@@ -53,6 +55,7 @@ class Metrics:
     recall: float
     hallucination_rate: float
     tn_rate: float
+    fabrication_detection_rate: float
     total_findings: int
     true_positives: int
     false_positives: int
@@ -60,6 +63,8 @@ class Metrics:
     missed_true_negatives: int  # missed expected_supported + undisputed - drives tn_rate
     true_negatives: int
     hallucinations: int
+    fabrication_targets: int  # expected findings with "not_found" in expected_lookup_status
+    fabrications_caught: int  # of those, how many a TP claimed with actual lookup_status="not_found"
     cost_usd: float
     latency_ms: int
 
@@ -101,6 +106,12 @@ def _match_expected_finding(
     if (
         expected.expected_evidence_doc is not None
         and _evidence_doc(finding) != expected.expected_evidence_doc
+    ):
+        return False
+    if (
+        expected.expected_lookup_status
+        and isinstance(finding, CitationFinding)
+        and finding.lookup.lookup_status not in expected.expected_lookup_status
     ):
         return False
     return True
@@ -162,6 +173,7 @@ def _classify_one(
     matched_es: set[int],
     matched_eu: set[int],
     doc_set: DocumentSet,
+    tp_lookup_by_ef: dict[int, str] | None = None,
 ) -> tuple[
     str,
     "ExpectedFinding | ExpectedSupported | ExpectedUndisputed | None",
@@ -194,6 +206,8 @@ def _classify_one(
             continue
         if _match_expected_finding(finding, finding_type, ef):
             matched_ef.add(i)
+            if tp_lookup_by_ef is not None and isinstance(finding, CitationFinding):
+                tp_lookup_by_ef[i] = finding.lookup.lookup_status
             return "true_positive", ef
 
     for i, es in enumerate(expected_supported):
@@ -261,6 +275,7 @@ def compute(
     matched_ef: set[int] = set()
     matched_es: set[int] = set()
     matched_eu: set[int] = set()
+    tp_lookup_by_ef: dict[int, str] = {}
 
     true_positives = 0
     false_positives = 0
@@ -278,6 +293,7 @@ def compute(
             matched_es,
             matched_eu,
             doc_set,
+            tp_lookup_by_ef=tp_lookup_by_ef,
         )
         if cls == "true_positive":
             true_positives += 1
@@ -319,6 +335,18 @@ def compute(
     tn_denominator = true_negatives + missed_true_negatives
     tn_rate = true_negatives / tn_denominator if tn_denominator else 1.0
 
+    fabrication_indices = [
+        i for i, ef in enumerate(expected_findings)
+        if "not_found" in ef.expected_lookup_status
+    ]
+    fabrication_targets = len(fabrication_indices)
+    fabrications_caught = sum(
+        1 for i in fabrication_indices if tp_lookup_by_ef.get(i) == "not_found"
+    )
+    fabrication_detection_rate = (
+        fabrications_caught / fabrication_targets if fabrication_targets else 1.0
+    )
+
     cost = _estimate_cost(
         actual_report.meta.token_usage.prompt,
         actual_report.meta.token_usage.completion,
@@ -329,6 +357,7 @@ def compute(
         recall=recall,
         hallucination_rate=hallucination_rate,
         tn_rate=tn_rate,
+        fabrication_detection_rate=fabrication_detection_rate,
         total_findings=total_findings,
         true_positives=true_positives,
         false_positives=false_positives,
@@ -336,6 +365,8 @@ def compute(
         missed_true_negatives=missed_true_negatives,
         true_negatives=true_negatives,
         hallucinations=hallucinations,
+        fabrication_targets=fabrication_targets,
+        fabrications_caught=fabrications_caught,
         cost_usd=cost,
         latency_ms=latency_ms or actual_report.meta.elapsed_ms,
     )

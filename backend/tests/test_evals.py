@@ -681,6 +681,7 @@ def test_metrics_dataclass_has_all_required_fields():
         recall=1.0,
         hallucination_rate=0.0,
         tn_rate=1.0,
+        fabrication_detection_rate=1.0,
         total_findings=0,
         true_positives=0,
         false_positives=0,
@@ -688,11 +689,14 @@ def test_metrics_dataclass_has_all_required_fields():
         missed_true_negatives=0,
         true_negatives=0,
         hallucinations=0,
+        fabrication_targets=0,
+        fabrications_caught=0,
         cost_usd=0.0,
         latency_ms=0,
     )
     assert m.precision == 1.0
     assert m.tn_rate == 1.0
+    assert m.fabrication_detection_rate == 1.0
 
 
 # ---------- per-finding classification tests ----------
@@ -1250,6 +1254,290 @@ def test_pipeline_dedupe_collapses_evidence_less_findings_sharing_distinctive_ph
     out = _dedupe_consistency_findings([f1, f2])
     assert len(out) == 1
     assert out[0] is f1
+
+
+# ---------- expected_lookup_status tests ----------
+
+
+def _make_citation_with_lookup_status(
+    *,
+    cite: str,
+    verdict: str,
+    lookup_status: str,
+) -> CitationFinding:
+    claim_span = TextSpan(
+        document_id="brief", start=0, end=len(cite), excerpt=cite
+    )
+    return CitationFinding(
+        citation=ExtractedCitation(
+            cite=cite,
+            proposition="some proposition",
+            quoted_language=None,
+            claim_span=claim_span,
+        ),
+        verdict=verdict,
+        confidence=0.85,
+        reasoning="...",
+        evidence_quote=None,
+        evidence_span=None,
+        lookup=CaseLookupResult(
+            found=lookup_status == "found",
+            canonical_cite=None,
+            holding_text=None,
+            quoted_text_match=None,
+            source_url=None,
+            lookup_status=lookup_status,
+            notes=None,
+        ),
+    )
+
+
+def test_rivera_case_validates_with_expected_lookup_status():
+    """The committed rivera_v_harmon.json must validate with the new field."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    case_path = repo_root / "backend" / "evals" / "cases" / "rivera_v_harmon.json"
+    raw = json.loads(case_path.read_text())
+    labels = CaseLabels.model_validate(raw)
+
+    fabricated = [
+        ef
+        for ef in labels.expected_findings
+        if ef.note and ef.note.startswith("Fabricated")
+    ]
+    assert fabricated, "expected at least one fabricated label"
+    for ef in fabricated:
+        assert ef.expected_lookup_status == ["not_found"], (
+            f"fabricated label {ef.cite_substring!r} must require not_found lookup"
+        )
+
+    privette = [
+        ef
+        for ef in labels.expected_findings
+        if ef.cite_substring and "Privette" in ef.cite_substring
+    ]
+    assert privette, "expected the Privette label"
+    assert privette[0].expected_lookup_status == ["found"]
+
+
+def test_expected_finding_default_lookup_status_is_empty_list():
+    ef = ExpectedFinding(
+        finding_type="citation",
+        cite_substring="Doe v. Roe",
+        verdict=["unsupported"],
+    )
+    assert ef.expected_lookup_status == []
+
+
+def test_expected_lookup_status_not_found_matches_actual_not_found():
+    finding = _make_citation_with_lookup_status(
+        cite="Doe v. Roe, 111 F.3d 222 (9th Cir. 1999)",
+        verdict="unsupported",
+        lookup_status="not_found",
+    )
+    expected = [
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Doe v. Roe",
+            verdict=["unsupported", "could_not_verify"],
+            expected_lookup_status=["not_found"],
+        )
+    ]
+    metrics = _compute(_report(citations=[finding]), expected_findings=expected)
+    assert metrics.true_positives == 1
+    assert metrics.false_positives == 0
+
+
+def test_expected_lookup_status_not_found_does_not_match_actual_found():
+    finding = _make_citation_with_lookup_status(
+        cite="Doe v. Roe, 111 F.3d 222 (9th Cir. 1999)",
+        verdict="unsupported",
+        lookup_status="found",
+    )
+    expected = [
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Doe v. Roe",
+            verdict=["unsupported", "could_not_verify"],
+            expected_lookup_status=["not_found"],
+        )
+    ]
+    metrics = _compute(_report(citations=[finding]), expected_findings=expected)
+    assert metrics.true_positives == 0
+    # Substring still matches so the slot gets consumed as an over-flag.
+    assert metrics.false_positives == 1
+
+
+def test_expected_lookup_status_empty_behaves_like_today():
+    finding = _make_citation_with_lookup_status(
+        cite="Doe v. Roe, 111 F.3d 222 (9th Cir. 1999)",
+        verdict="unsupported",
+        lookup_status="found",
+    )
+    expected = [
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Doe v. Roe",
+            verdict=["unsupported", "could_not_verify"],
+        )
+    ]
+    metrics = _compute(_report(citations=[finding]), expected_findings=expected)
+    assert metrics.true_positives == 1
+
+
+def test_expected_lookup_status_no_op_for_consistency_findings():
+    """A consistency label with expected_lookup_status set is a no-op on consistency
+    findings - they have no lookup."""
+
+    finding = _make_consistency(
+        claim_text="March 14, 2021",
+        verdict="contradicted",
+        evidence_text="March 12, 2021",
+    )
+    expected = [
+        ExpectedFinding(
+            finding_type="consistency",
+            claim_substring="March 14, 2021",
+            verdict=["contradicted"],
+            expected_lookup_status=["not_found"],
+        )
+    ]
+    metrics = _compute(_report(consistency=[finding]), expected_findings=expected)
+    assert metrics.true_positives == 1
+
+
+# ---------- fabrication_detection_rate tests ----------
+
+
+def test_fabrication_detection_rate_one_when_no_fabrication_labels():
+    metrics = _compute(_report())
+    assert metrics.fabrication_detection_rate == 1.0
+
+
+def test_fabrication_detection_rate_one_when_all_fabrications_caught():
+    f1 = _make_citation_with_lookup_status(
+        cite="Doe v. Roe, 111 F.3d 222 (9th Cir. 1999)",
+        verdict="unsupported",
+        lookup_status="not_found",
+    )
+    expected = [
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Doe v. Roe",
+            verdict=["unsupported", "could_not_verify"],
+            expected_lookup_status=["not_found"],
+        )
+    ]
+    metrics = _compute(_report(citations=[f1]), expected_findings=expected)
+    assert metrics.fabrication_detection_rate == 1.0
+
+
+def test_fabrication_detection_rate_zero_when_no_fabrications_caught():
+    """An expected fabrication label that the pipeline missed entirely scores 0."""
+
+    expected = [
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Doe v. Roe",
+            verdict=["unsupported", "could_not_verify"],
+            expected_lookup_status=["not_found"],
+        )
+    ]
+    metrics = _compute(_report(), expected_findings=expected)
+    assert metrics.fabrication_detection_rate == 0.0
+
+
+def test_fabrication_detection_rate_partial():
+    """One-of-two fabrications caught -> rate 0.5."""
+
+    caught = _make_citation_with_lookup_status(
+        cite="Doe v. Roe, 111 F.3d 222 (9th Cir. 1999)",
+        verdict="unsupported",
+        lookup_status="not_found",
+    )
+    expected = [
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Doe v. Roe",
+            verdict=["unsupported", "could_not_verify"],
+            expected_lookup_status=["not_found"],
+        ),
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Smith v. Jones",
+            verdict=["unsupported", "could_not_verify"],
+            expected_lookup_status=["not_found"],
+        ),
+    ]
+    metrics = _compute(_report(citations=[caught]), expected_findings=expected)
+    assert metrics.fabrication_detection_rate == 0.5
+
+
+def test_fabrication_detection_rate_excludes_non_fabrication_labels():
+    """An expected_lookup_status=['found'] label is not a fabrication target."""
+
+    f1 = _make_citation_with_lookup_status(
+        cite="Privette v. Superior Court, 5 Cal.4th 689 (1993)",
+        verdict="contradicted",
+        lookup_status="found",
+    )
+    expected = [
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Privette",
+            verdict=["contradicted", "unsupported"],
+            expected_lookup_status=["found"],
+        )
+    ]
+    metrics = _compute(_report(citations=[f1]), expected_findings=expected)
+    # No fabrication labels in play; rate is 1.0.
+    assert metrics.fabrication_detection_rate == 1.0
+
+
+def test_fabrication_detection_rate_in_aggregate():
+    """The runner _aggregate rolls TP/total across cases and recomputes."""
+
+    from evals.run import _aggregate
+
+    caught = _make_citation_with_lookup_status(
+        cite="Doe v. Roe, 111 F.3d 222 (9th Cir. 1999)",
+        verdict="unsupported",
+        lookup_status="not_found",
+    )
+    expected_caught = [
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Doe v. Roe",
+            verdict=["unsupported", "could_not_verify"],
+            expected_lookup_status=["not_found"],
+        )
+    ]
+    m_caught = _compute(
+        _report(citations=[caught]), expected_findings=expected_caught
+    )
+    expected_missed = [
+        ExpectedFinding(
+            finding_type="citation",
+            cite_substring="Smith v. Jones",
+            verdict=["unsupported", "could_not_verify"],
+            expected_lookup_status=["not_found"],
+        )
+    ]
+    m_missed = _compute(_report(), expected_findings=expected_missed)
+    agg = _aggregate([("a", m_caught), ("b", m_missed)])
+    assert agg.fabrication_detection_rate == 0.5
+
+
+def test_history_line_includes_fabrication_detection_rate(tmp_path, monkeypatch):
+    from evals import run as run_mod
+
+    monkeypatch.setattr(run_mod, "HISTORY_PATH", tmp_path / "history.jsonl")
+    metrics = _compute(_report())
+    run_mod._append_history("case_x", "case", metrics)
+
+    line = json.loads((tmp_path / "history.jsonl").read_text().strip())
+    assert "fabrication_detection_rate" in line
+    assert line["fabrication_detection_rate"] == metrics.fabrication_detection_rate
 
 
 def test_pipeline_dedupe_does_not_collapse_across_verdicts():
