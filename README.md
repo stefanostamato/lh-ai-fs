@@ -1,130 +1,88 @@
-# BS Detector
+# BS Detector - Stefano's submission
 
-Legal briefs lie. Not always intentionally — but they do. They cite cases that don't say what they claim. They quote authority with words quietly removed. They state facts that contradict the documents sitting right next to them.
+A multi-agent pipeline that audits a Motion for Summary Judgment for fabricated citations, doctored quotes, and facts that contradict the supporting record. Built for the Learned Hand take-home challenge.
 
-Your task: build an AI pipeline that catches it.
+The original challenge brief is preserved in [BRIEF.md](BRIEF.md). This README is for the reviewer.
 
-## Why this matters (Stefano's framing)
-
-This sits inside Learned Hand's product DNA: tools judges trust to do more with current resources. Trust is the whole game - one fabricated finding erodes confidence in every other finding the system has produced. The pipeline I'm building reflects that with three load-bearing commitments:
-
-- **Surface, don't decide.** Every flag is a question for a judge with evidence attached. The system flags; the human rules.
-- **Verifiability is the schema.** Every finding carries a `TextSpan` back to the source so a judge can click from a flag straight into the document. A finding that floats free of its source is malformed.
-- **Impartiality.** Both sides' claims get equal skepticism. Prompts speak in role labels, not party names.
-
-The detail on these lives in [AGENTS.md](AGENTS.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
-
-## A note on `.claude/` (Stefano's submission)
-
-The `.claude/` folder is committed on purpose. The README says "Use everything. We want to see how you use it" - so I'm showing you the Claude Code workflow I built for this challenge instead of hiding it. If you peek inside you'll find:
-
-- `.claude/commands/` - slash commands I wrote for this project. `/plan` grills me on requirements and writes an executable plan. `/execute` orchestrates subagents to build it task-by-task with TDD. `/verify` audits the result against the plan. `/tweak` patches issues post-build and logs them on the plan. `/eval` runs the eval suite against real LLMs. `/write-notes` appends to my running diary in [NOTES.md](NOTES.md).
-- `.claude/plans/` - the actual plans I executed. Each one has a spec, a task graph, per-task subagent prompts with TDD instructions, and a post-build refinements log. They're the closest thing to a project journal of what I built and why.
-
-Read [AGENTS.md](AGENTS.md) for the code rules I followed and [ARCHITECTURE.md](ARCHITECTURE.md) for where things live and why. [NOTES.md](NOTES.md) is my running diary. The reflection doc at the end of the project pulls from all of these.
-
-## Setup
-
-### Docker (recommended)
+## Quickstart
 
 ```bash
-cp .env.example .env      # Add your OpenAI API key
+cp .env.example .env      # add OPENAI_API_KEY
 docker compose up --build
 ```
 
-The API runs at `http://localhost:8002`. The UI runs at `http://localhost:5175`.
+Open the UI at [http://localhost:5175](http://localhost:5175) and click **Analyze**. The API is at [http://localhost:8002](http://localhost:8002) (`POST /analyze`, no body - loads the Rivera case from `backend/documents/`). Both services hot-reload.
 
-Both services hot-reload — edit files on your host and changes appear automatically.
+Manual setup is documented in [SETUP.md](SETUP.md) if Docker is inconvenient.
 
-### Manual Setup
+## What was built
 
-#### Backend
+Legend: ✅ shipped and solid. ⚠️ shipped but with a caveat I'd want to fix - see notes.
+
+| Tier | Requirement | Status | Where to look / caveat |
+|---|---|---|---|
+| 1 | Extract citations from the MSJ | ✅ | [agents/citation_extractor.py](backend/agents/citation_extractor.py) |
+| 1 | Verify each citation against authority | ✅ | [agents/citation_verifier.py](backend/agents/citation_verifier.py) + [agents/tools/](backend/agents/tools) (CourtListener) |
+| 1 | Flag direct quotes for accuracy | ⚠️ | folded into the verifier as `quoted_text_match` rather than a dedicated agent. Works, but the citation pillar overall is rougher than the rest - see [REFLECTIONS.md](REFLECTIONS.md) |
+| 1 | Structured JSON output | ✅ | [schemas.py](backend/schemas.py) - `Report` is the response shape |
+| 2 | Eval harness, single command | ⚠️ | `cd backend && python -m evals.run`. One labeled case (Rivera) - recall = 1.0 is suspect until a second held-out case is added. See [evals/README.md](backend/evals/README.md) |
+| 2 | Precision, recall, hallucination rate | ✅ | [evals/metrics.py](backend/evals/metrics.py) (+ cost & latency). Hallucination rate is structural, not LLM-judged |
+| 2 | Cross-doc consistency check | ✅ | [agents/crossdoc_checker.py](backend/agents/crossdoc_checker.py) |
+| 2 | Express uncertainty | ✅ | `could_not_verify` is a first-class verdict, distinct from `unsupported` |
+| 2 | Structured data between agents | ✅ | Pydantic with `extra: "forbid"` everywhere - see `schemas.py` |
+| 3 | ≥ 4 distinct agents | ✅ | 7 modules in [agents/](backend/agents) - 5 LLM specialists (citation extractor, citation verifier, claim extractor, cross-doc checker, memo writer) + 2 deterministic parsers (brief, record) |
+| 3 | Confidence scoring with reasoning | ⚠️ | `confidence: float` + `reasoning: str` on every finding, but uncalibrated. No Brier score or reliability diagram yet - the numbers are a vibe |
+| 3 | Judicial memo agent | ✅ | [agents/memo_writer.py](backend/agents/memo_writer.py) - clerk voice, may not upgrade verdicts |
+| 3 | Graceful failure orchestration | ⚠️ | `_safe_call` in [pipeline.py](backend/pipeline.py) catches agent crashes as `could_not_verify` + `partial_failures`. Retry/backoff for OpenAI 429s was added reactively after eval failures, not by design |
+| 3 | Structured UI | ✅ | [frontend/src/](frontend/src) - `ReportView` + `FlagCard` |
+| 3 | Reflection doc | ✅ | [REFLECTIONS.md](REFLECTIONS.md) |
+
+## Reviewer's map (your evaluation criteria)
+
+> 1. **How you decompose the problem into agents** → architecture diagram and rationale in [ARCHITECTURE.md §3.1-§3.3](ARCHITECTURE.md#31-the-pipeline-at-a-glance). Decomposition emerged from the four BS categories I found in the manual case-file analysis ([NOTES.md stage 2](NOTES.md)) - see [REFLECTIONS.md "Specialist agents over a generalist"](REFLECTIONS.md).
+>
+> 2. **How precisely you write prompts** → prompts live as Python constants in [backend/agents/prompts/](backend/agents/prompts). Each declares role, inputs, output schema, and what counts as uncertainty. Voice is "clerk for a judge", never advocate. Prompt rules are codified in [AGENTS.md §3 "Prompt hygiene"](AGENTS.md).
+>
+> 3. **Quality of eval approach** → [backend/evals/README.md](backend/evals/README.md) covers what the metrics measure and why. Notable: hallucination rate is structural (excerpt-must-appear-in-source), not LLM-judged. Gold labels live in [evals/cases/](backend/evals/cases). Run history in [evals/history.jsonl](backend/evals/history.jsonl).
+>
+> 4. **How far through the spec** → table above. All of Tier 1, all of Tier 2, all Tier 3 items.
+>
+> 5. **How honest the reflection is** → [REFLECTIONS.md](REFLECTIONS.md). Calls out: precision was the bottleneck (~85% then 73% after one round of false-positive fixes), recall = 1.0 is suspicious and probably overfit, citation pillar shipped rougher than the rest, confidence scores are uncalibrated.
+
+## Run the evals
 
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env      # Add your OpenAI API key
-uvicorn main:app --reload
+cd backend && python -m evals.run
 ```
 
-The API runs at `http://localhost:8002`.
+Hits the live OpenAI and CourtListener APIs. Each case fires the full pipeline (~10-15 LLM calls). Prints per-case + aggregate `precision`, `recall`, `hallucination_rate`, `cost_usd`, `latency_ms`. Exits non-zero if `recall < 0.6` or `hallucination_rate > 0.1`.
 
-#### Frontend
+For machine-readable output: `python -m evals.run --report-out /tmp/eval.json`. Schema in [evals/report.py](backend/evals/report.py).
+
+Adding cases, matching rules, and what's intentionally *not* measured: [backend/evals/README.md](backend/evals/README.md).
+
+## Run the unit tests
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd backend && pytest
 ```
 
-The UI runs at `http://localhost:5175`.
+Unit tests mock at the `llm.py` boundary via the `mock_llm` fixture and never hit the network. Eval is the only place real LLMs run.
 
-## The Task
+## Citation lookup - one network detail
 
-Inside `backend/documents/` you'll find a small case file: a Motion for Summary Judgment in a personal injury lawsuit (*Rivera v. Harmon Construction Group*), along with a police report, medical records, and a witness statement.
+The citation pillar checks each cite against [CourtListener](https://www.courtlistener.com)'s free v4 search endpoint. No API key. We post-filter results by exact normalized cite match because the older v3 single-shot `citation-lookup` endpoint now requires auth. A cite CourtListener can't find lands as `lookup_status: "not_found"` and the verifier short-circuits to `could_not_verify` with no fabricated holding text - that's how fabricated cites get caught. `python -m evals.run` requires internet; unit tests use the `mock_lookup` fixture and don't.
 
-Build a multi-agent pipeline that analyzes these documents and produces a structured verification report. Your pipeline should:
+## A note on `.claude/`
 
-**Core (Tier 1)**
-- Extract all citations from the Motion for Summary Judgment
-- For each citation, assess whether the cited authority actually supports the proposition as stated
-- Flag direct quotes for accuracy
-- Produce structured output (JSON) — not a wall of prose
+Committed on purpose. The brief said "use everything, we want to see how you use it", so the workflow is in the repo:
 
-**Expected (Tier 2)**
-- Build an eval harness that measures your pipeline's output quality. It must be runnable via a single command (e.g., `python run_evals.py`). At minimum, measure precision (avoiding false flags), recall (catching known flaws), and hallucination rate (not fabricating findings). You choose the approach — there's no prescribed framework or tooling.
-- Cross-document consistency check: compare facts stated in the MSJ against the police report, medical records, and witness statement
-- Express uncertainty appropriately — "could not verify" rather than fabricating a finding
-- Pass structured data between agents, not raw text blobs
+- [.claude/commands/](.claude/commands) - `/plan`, `/execute`, `/verify`, `/tweak`, `/eval`, `/write-notes`. The orchestrator for `/execute` runs each task's tests itself before marking it done; the subagent's narrative isn't proof.
+- [.claude/plans/](.claude/plans) - the actual plans I executed. Spec, task graph, per-task subagent prompts with TDD, post-build refinements log.
 
-**Stretch (Tier 3)**
-- At least 4 well-defined agents with distinct, non-overlapping roles
-- A confidence scoring layer: each flag rated by how certain the pipeline is, with reasoning
-- A judicial memo agent: synthesizes the top findings into a one-paragraph summary written for a judge
-- Agent orchestration that handles failures gracefully
-- A UI that displays the report in a structured, readable way — not just raw JSON
-- A reflection document explaining the tradeoffs you made and what you'd do differently
+## Reading order
 
-## Deliverables
-
-1. A working `POST /analyze` endpoint that returns a structured verification report
-2. Agent code with clear, named agents and explicit prompts
-3. A runnable eval suite with instructions in your README on how to run it
-4. A brief reflection (in the repo or as a separate file) on your design decisions and tradeoffs
-
-## Time
-
-6 hours. This is intentionally scoped beyond what most candidates will finish. Where you invest your time matters more than finishing everything. A well-tested pipeline that catches 3 flaws is stronger than an untested one that attempts 10.
-
-## Citation lookup
-
-The citation pillar checks each cite against [CourtListener](https://www.courtlistener.com), Free Law Project's free case-law API. We use the unauthenticated tier, so there's no API key to set.
-
-A few details worth knowing:
-
-- We hit the v4 search endpoint (`/api/rest/v4/search/?type=o&citation=...`) and post-filter results by exact normalized cite match. The older v3 `citation-lookup` endpoint that does the same job in one call now requires auth, so we get there with a search + filter on the unauth tier.
-- A cite that CourtListener can't find lands as `lookup.lookup_status == "not_found"`. The verifier short-circuits to `verdict: "could_not_verify"` with high confidence and emits no fabricated holding text. That's how the pipeline catches made-up citations: the source doesn't exist, so no agent gets to invent one.
-- Running `python3 -m evals.run` requires an internet connection. There's no on-disk cache of CourtListener responses; each eval run hits the live API. With only ten cites in the Rivera case, we're nowhere near the 5000 req/day rate limit.
-- Unit tests never touch the network. They use the `mock_lookup` fixture in [backend/tests/conftest.py](backend/tests/conftest.py) to stand in for `CourtListenerLookup.fetch`.
-
-## Evals
-
-We run your eval suite as part of our review. Document how to run it in your README. We care more about thoughtful metric design than perfect scores — an eval that honestly reports 60% recall tells us more than one that reports 100% on cherry-picked cases.
-
-## AI Usage
-
-Use everything. That's the job. We want to see how you use it, not whether you do.
-
-## Evaluation
-
-We are evaluating:
-
-1. How you decompose the problem into agents
-2. How precisely you write prompts
-3. The quality of your eval approach — do you measure what matters?
-4. How far you get through the spec
-5. How honest your reflection is
-
-Not lines of code.
+1. **[REFLECTIONS.md](REFLECTIONS.md)** - design decisions, what worked, what didn't, what I'd do differently. The reviewer-facing synthesis.
+2. **[ARCHITECTURE.md](ARCHITECTURE.md)** - pipeline shape, agent boundaries, schema contracts, what's deliberately *not* here.
+3. **[AGENTS.md](AGENTS.md)** - operating rules I held myself to (and held the subagents to).
+4. **[NOTES.md](NOTES.md)** - running diary. Raw, ordered by time, has the play-by-play.
