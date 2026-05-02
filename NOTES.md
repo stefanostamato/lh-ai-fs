@@ -123,5 +123,7 @@ After seeing the review above it was clear that AI had a few gaps in understandi
 README.md - short "Why this matters" section threading Learned Hand's framing into the brief.*
 
 ## 4. Push to git
-**Time spent:** 5 minutes
-At this point I felt comfortable with the project structure
+**Time spent:** 2 minutes
+At this point I felt comfortable with the project structure and decided to push to my fork. Structured this in a few commits:
+* docs: add project rules, architecture, and notes
+* chore: commit .claude/ workflow with explanation in README
