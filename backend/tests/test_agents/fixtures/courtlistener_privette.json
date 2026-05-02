@@ -1,0 +1,38 @@
+{
+  "count": 1,
+  "next": null,
+  "previous": null,
+  "results": [
+    {
+      "absolute_url": "/opinion/1447864/privette-v-superior-court/",
+      "caseName": "Privette v. Superior Court",
+      "caseNameFull": "FRANKLIN PRIVETTE, Petitioner, v. THE SUPERIOR COURT OF SANTA CLARA COUNTY, Respondent; JESUS CONTRERAS, Real Party in Interest",
+      "citation": [
+        "854 P.2d 721",
+        "5 Cal. 4th 689",
+        "21 Cal. Rptr. 2d 72"
+      ],
+      "cluster_id": 1447864,
+      "court": "California Supreme Court",
+      "court_citation_string": "Cal.",
+      "court_id": "cal",
+      "dateFiled": "1993-07-19",
+      "docketNumber": "S024758",
+      "judge": "Kennard",
+      "headnote": "A person who hires an independent contractor is generally not liable for injuries sustained on the job by an employee of the contractor; workers' compensation is the contractor's employee's exclusive remedy.",
+      "summary": "",
+      "syllabus": "",
+      "procedural_history": "",
+      "opinions": [
+        {
+          "id": 1447864,
+          "type": "combined-opinion",
+          "per_curiam": false,
+          "author_id": 3819,
+          "snippet": "5 Cal.4th 689 (1993). FRANKLIN PRIVETTE, Petitioner, v. THE SUPERIOR COURT OF SANTA CLARA COUNTY, Respondent. The peculiar risk doctrine does not apply to bar the recovery of workers' compensation benefits, and a hirer is not liable for on-the-job injuries to an independent contractor's employee under that doctrine."
+        }
+      ],
+      "status": "Published"
+    }
+  ]
+}

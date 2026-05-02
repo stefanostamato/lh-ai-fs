@@ -10,7 +10,8 @@ from agents.claim_extractor import extract_claims
 from agents.crossdoc_checker import check_claim
 from agents.memo_writer import MemoVerdictPromotionError, write_memo
 from agents.record_parser import parse_record
-from agents.tools.case_lookup import CaseLawLookup, ParametricLLMLookup
+from agents.tools.case_lookup import CaseLawLookup
+from agents.tools.courtlistener_lookup import CourtListenerLookup
 from llm import DEFAULT_MODEL, LlmError
 from schemas import (
     CaseLookupResult,
@@ -325,7 +326,7 @@ async def run_pipeline(doc_set: DocumentSet) -> Report:
     usage = UsageCollector()
     failures: list[PartialFailure] = []
     sem = asyncio.Semaphore(CONCURRENCY_CAP)
-    lookup = ParametricLLMLookup()
+    lookup = CourtListenerLookup()
 
     parsed_brief = parse_brief(doc_set.brief())
     parsed_records = [parse_record(r) for r in doc_set.records()]

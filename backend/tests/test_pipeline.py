@@ -68,7 +68,6 @@ CITATION_VERIFIER_KEY = "verifying one citation"
 CLAIM_EXTRACTOR_KEY = "extracting factual claims"
 CROSSDOC_CHECKER_KEY = "checking one factual claim"
 MEMO_WRITER_KEY = "drafting a one-paragraph memo"
-PARAMETRIC_LOOKUP_KEY = "legal research assistant looking up"
 
 
 def _citation_extractor_payload(brief_text: str):
@@ -114,18 +113,6 @@ def _claim_extractor_payload(brief_text: str):
     )
 
 
-def _parametric_lookup_payload():
-    from agents.tools.case_lookup import ParametricLookupResponse
-
-    return ParametricLookupResponse(
-        confidence=0.9,
-        canonical_cite="Doe v. Roe, 111 F.3d 222 (9th Cir. 1999)",
-        holding_text="The court held the sky is, indeed, blue.",
-        quoted_text_match=None,
-        notes=None,
-    )
-
-
 def _citation_verifier_payload():
     from agents.citation_verifier import CitationJudgmentResponse
 
@@ -163,7 +150,6 @@ def _memo_payload():
 def _happy_responder(brief_text: str, record_display_name: str, evidence_quote: str):
     citation_resp = _citation_extractor_payload(brief_text)
     claim_resp = _claim_extractor_payload(brief_text)
-    lookup_resp = _parametric_lookup_payload()
     verifier_resp = _citation_verifier_payload()
     crossdoc_resp = _crossdoc_checker_payload(record_display_name, evidence_quote)
     memo_resp = _memo_payload()
@@ -173,8 +159,6 @@ def _happy_responder(brief_text: str, record_display_name: str, evidence_quote: 
             return citation_resp
         if CLAIM_EXTRACTOR_KEY in prompt:
             return claim_resp
-        if PARAMETRIC_LOOKUP_KEY in prompt:
-            return lookup_resp
         if CITATION_VERIFIER_KEY in prompt:
             return verifier_resp
         if CROSSDOC_CHECKER_KEY in prompt:
@@ -189,9 +173,24 @@ def _happy_responder(brief_text: str, record_display_name: str, evidence_quote: 
 # --- Tests -----------------------------------------------------------------
 
 
-def test_run_pipeline_happy_path(mock_llm):
+def _found_lookup_result(cite: str) -> "CaseLookupResult":
+    from schemas import CaseLookupResult
+
+    return CaseLookupResult(
+        found=True,
+        canonical_cite=cite,
+        holding_text="The court held the sky is, indeed, blue.",
+        quoted_text_match=None,
+        source_url="https://www.courtlistener.com/opinion/1/example/",
+        lookup_status="found",
+        notes=None,
+    )
+
+
+def test_run_pipeline_happy_path(mock_llm, mock_lookup):
     doc_set = _doc_set()
     mock_llm(_happy_responder(SYNTHETIC_BRIEF_TEXT, "Record A", "the incident occurred Wednesday"))
+    mock_lookup(lambda citation: _found_lookup_result(citation.cite))
 
     report = asyncio.run(run_pipeline(doc_set))
 
@@ -204,9 +203,10 @@ def test_run_pipeline_happy_path(mock_llm):
     assert report.meta.token_usage.prompt >= 0
     assert report.meta.token_usage.completion >= 0
     assert report.meta.model
+    assert all(c.lookup.source_url for c in report.citations)
 
 
-def test_run_pipeline_concurrency_capped_at_five(mock_llm, monkeypatch):
+def test_run_pipeline_concurrency_capped_at_five(mock_llm, mock_lookup, monkeypatch):
     cites = [f"Case{i} v. Other, {i} F.3d {i} (9th Cir. 200{i % 10})" for i in range(12)]
     brief_text = "Intro paragraph.\n\n" + " ".join(cites) + "\n"
     doc_set = _doc_set(brief_text=brief_text)
@@ -228,9 +228,10 @@ def test_run_pipeline_concurrency_capped_at_five(mock_llm, monkeypatch):
     citation_resp = CitationExtractionResponse(citations=drafts)
     from agents.claim_extractor import ClaimExtractionResponse
     claim_resp = ClaimExtractionResponse(claims=[])
-    lookup_resp = _parametric_lookup_payload()
     verifier_resp = _citation_verifier_payload()
     memo_resp = _memo_payload()
+
+    mock_lookup(lambda citation: _found_lookup_result(citation.cite))
 
     in_flight = 0
     max_in_flight = 0
@@ -245,8 +246,6 @@ def test_run_pipeline_concurrency_capped_at_five(mock_llm, monkeypatch):
                 return citation_resp
             if CLAIM_EXTRACTOR_KEY in prompt:
                 return claim_resp
-            if PARAMETRIC_LOOKUP_KEY in prompt:
-                return lookup_resp
             if CITATION_VERIFIER_KEY in prompt:
                 return verifier_resp
             if MEMO_WRITER_KEY in prompt:
@@ -273,12 +272,11 @@ def test_run_pipeline_concurrency_capped_at_five(mock_llm, monkeypatch):
     assert len(report.citations) == 12
 
 
-def test_run_pipeline_single_agent_failure(mock_llm):
+def test_run_pipeline_single_agent_failure(mock_llm, mock_lookup):
     doc_set = _doc_set()
 
     citation_resp = _citation_extractor_payload(SYNTHETIC_BRIEF_TEXT)
     claim_resp = _claim_extractor_payload(SYNTHETIC_BRIEF_TEXT)
-    lookup_resp = _parametric_lookup_payload()
     verifier_resp = _citation_verifier_payload()
     crossdoc_resp = _crossdoc_checker_payload("Record A", "the incident occurred Wednesday")
     memo_resp = _memo_payload()
@@ -290,8 +288,6 @@ def test_run_pipeline_single_agent_failure(mock_llm):
             return citation_resp
         if CLAIM_EXTRACTOR_KEY in prompt:
             return claim_resp
-        if PARAMETRIC_LOOKUP_KEY in prompt:
-            return lookup_resp
         if CITATION_VERIFIER_KEY in prompt:
             verifier_call_count["n"] += 1
             if verifier_call_count["n"] == 2:
@@ -304,6 +300,7 @@ def test_run_pipeline_single_agent_failure(mock_llm):
         raise KeyError(prompt[:80])
 
     mock_llm(respond)
+    mock_lookup(lambda citation: _found_lookup_result(citation.cite))
 
     report = asyncio.run(run_pipeline(doc_set))
 
@@ -317,7 +314,9 @@ def test_run_pipeline_all_agents_fail(mock_llm):
     doc_set = _doc_set()
 
     # Seed the fixture's "called at least once" contract before flipping to
-    # the all-raises responder.
+    # the all-raises responder. No mock_lookup here - the citation extractor
+    # fails first, so there are no citations to look up and the network
+    # seam is never reached.
     seeded = {"done": False}
 
     def respond(prompt: str):
@@ -420,7 +419,7 @@ def test_run_pipeline_span_validation_unknown_doc(mock_llm, monkeypatch):
     )
 
 
-def test_run_pipeline_agnostic_to_document_ids(mock_llm):
+def test_run_pipeline_agnostic_to_document_ids(mock_llm, mock_lookup):
     """Run with two differently-shaped synthetic DocumentSets. Both must
     produce shape-equivalent Reports, proving the orchestrator doesn't care
     about specific document_ids."""
@@ -438,6 +437,8 @@ def test_run_pipeline_agnostic_to_document_ids(mock_llm):
         ],
     )
 
+    mock_lookup(lambda citation: _found_lookup_result(citation.cite))
+
     mock_llm(_happy_responder(SYNTHETIC_BRIEF_TEXT, "Alpha One", "the incident occurred Wednesday"))
     report_one = asyncio.run(run_pipeline(set_one))
 
@@ -451,7 +452,7 @@ def test_run_pipeline_agnostic_to_document_ids(mock_llm):
     assert report_one.meta.elapsed_ms > 0 and report_two.meta.elapsed_ms > 0
 
 
-def test_run_pipeline_token_usage_aggregates(mock_llm, monkeypatch):
+def test_run_pipeline_token_usage_aggregates(mock_llm, mock_lookup, monkeypatch):
     """Patch call_llm_async with a tracker that bumps the UsageCollector
     directly so we can verify the orchestrator threads `usage` through every
     LLM-bound agent call."""
@@ -475,13 +476,14 @@ def test_run_pipeline_token_usage_aggregates(mock_llm, monkeypatch):
     _llm.call_llm("seed", None)
 
     monkeypatch.setattr("llm.call_llm_async", patched_async)
+    mock_lookup(lambda citation: _found_lookup_result(citation.cite))
 
     report = asyncio.run(run_pipeline(doc_set))
 
     # Every LLM-bound agent (extractors, verifier judgment, crossdoc, memo)
-    # must thread `usage`. The lookup tool is a separate seam and intentionally
-    # does not pass `usage` - those calls show up in total_calls but not
-    # usage_calls. The aggregate must reflect every usage-threaded call.
+    # must thread `usage`. The lookup tool is a separate seam and does not
+    # touch the LLM at all under CourtListenerLookup. The aggregate must
+    # reflect every usage-threaded call.
     assert usage_calls["n"] >= 5
     assert report.meta.token_usage.prompt == 10 * usage_calls["n"]
     assert report.meta.token_usage.completion == 5 * usage_calls["n"]
