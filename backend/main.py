@@ -1,6 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
+from fastapi.responses import PlainTextResponse
+
+from case_loader import load_default_case
+from pipeline import run_pipeline
+from schemas import Report
 
 app = FastAPI()
 
@@ -12,19 +16,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DOCUMENTS_DIR = Path(__file__).parent / "documents"
+
+@app.post("/analyze", response_model=Report)
+async def analyze() -> Report:
+    doc_set = load_default_case()
+    return await run_pipeline(doc_set)
 
 
-def load_documents() -> dict[str, str]:
-    """Load all documents from the documents directory."""
-    documents = {}
-    for file_path in DOCUMENTS_DIR.glob("*.txt"):
-        documents[file_path.stem] = file_path.read_text()
-    return documents
-
-
-@app.post("/analyze")
-async def analyze():
-    documents = load_documents()
-    # TODO: Build your multi-agent pipeline here
-    return {"report": None}
+@app.get("/documents/{document_id}", response_class=PlainTextResponse)
+async def get_document(document_id: str) -> str:
+    doc_set = load_default_case()
+    try:
+        return doc_set.by_id(document_id).text
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"unknown document_id: {document_id}")
