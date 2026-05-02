@@ -100,6 +100,8 @@ def mock_llm(monkeypatch):
 
 Tests use `mock_llm({"extract citations": citation_json_payload})` - keyed by something distinctive in the prompt so the same fixture handles multi-step tests. Never patch `openai.*` directly.
 
+- **`mock_lookup`** is the parallel fixture for `CaseLawLookup`. Same factory shape - pass a `{cite_substring: CaseLookupResult}` dict or a `(citation) -> CaseLookupResult` callable. It patches `CourtListenerLookup.fetch` so any pipeline-driven test gets a fake lookup result without hitting the network. Asserts the patched function was called at least once. Use this for tests that drive the verifier or full pipeline; never reach into `httpx.*` directly.
+
 ### Prompt hygiene
 - **Prompts live in `.py` files** as constants or template functions. Not YAML, not inline in handlers. Version-controlled, importable, testable.
 - **Each agent's prompt declares: role, inputs, output schema, what counts as uncertainty.** No "be helpful" filler.

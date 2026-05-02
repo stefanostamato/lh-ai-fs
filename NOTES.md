@@ -218,7 +218,7 @@ The /execute approach here paid off - claude was able to build the entire thing 
 At this point we're at ~85% precision but I'm running out of time, only 30 mins left. I need to move on. There's a lot to improve but I'm satisfied with the trajectory over these improvements - in an hour and a bit we went from ~50% precision to ~85%, not too bad.
 
 ## 7. Add actual case citation checker
-Started planning this in parallel with the tweaks in the phase above. Given time crunch I went with the very simplest approach - it creates a big agent with a fat tool that does a lot of things. If I had more time I would have split this into a more reasonable shape.
+Started planning this in parallel with the tweaks in the phase above. Given time crunch I went with the very simplest approach - it creates a big agent with a fat tool that does a lot of things. If I had more time I would have split this into a more reasonable shape. I'll be very honest - I was only able to finish this ~15 minutes over time. So I'm including it in its own separate commit, including the reflections around this. In hindsight I'd have included this in my first pass, it is core to the app and would perform better if I hadn't bolted it on at the last minute.
 
 ## Future to-do's
 I'm keeping a running list of stuff I still need to do so I don't forget.

@@ -1,8 +1,6 @@
 # Reflections
 
-This is the end-of-project reflection that the README asks for. It pulls from the running diary in [NOTES.md](NOTES.md), but it's the synthesized version - what I'd actually want a reviewer to read. The diary has the play-by-play; this has the takeaways.
-
-The README grades reflection on honesty. So this is honest, not flattering. If something didn't work I say so. If a decision was a coin flip I say so.
+This is the end-of-project reflection that the README asks for. It pulls from the running diary in [NOTES.md](NOTES.md), but it's the synthesized version - the diary has the play-by-play; this has the takeaways.
 
 ## What I built
 
@@ -72,7 +70,7 @@ I let some gold-label findings accept either of two verdicts (e.g., a fabricated
 - **TDD via the orchestrator.** Every task in every plan had test acceptance criteria, and `/execute` enforced them. No agent got marked done without its tests passing. The eval harness tells me about end-to-end quality; the unit tests tell me about component correctness; together they cover most of the surface.
 
 ## What didn't work, what surprised me
-
+- **Citation checker went ~15 minutes over time:** I should have built this as part of stage one. I'm quite frustrated I didn't - it was clearly a huge part of the requirements and I tunnel-visioned too much into the cross-document consistency rather than focusing on this. That was the wrong call, and an important learning moment for me. In the future I'd spend more time building intuition around the requirements/brief to avoid allocating time where it's not as needed - especially under time pressure like this challenge.
 - **Recall = 1.0 in the eval is suspicious.** I don't trust it. My best hypotheses: the pipeline overflags (which would benefit recall at the cost of precision - and precision *is* the bottleneck, which fits), or the labels are overfit to this specific document. I didn't have time to dig in. If I were continuing this I'd build a second test case (a synthetic mirrored plaintiff brief) and see if recall held. If recall stays 1.0 on a held-out brief it's real. If it drops, it was overfit.
 - **Precision was the bottleneck, not recall.** The first pipeline run flagged 22 findings when the gold label said 11. Precision around 50%. I spent the second half of the project pushing it to ~85% by fixing false positives in the consistency checker (consistent claims being surfaced as findings, undisputed-but-uncorroborated facts being marked `could_not_verify`, duplicate flags), fixing the TextSpan limitation (claims supported by text that spans multiple spans were getting flagged as `unsupported`), and updating the AI-generated eval labels which were missing some legitimately cited authorities. False flags are the worst failure mode for a judge-facing tool because they erode trust most. If I had another hour I'd push precision further.
 - **OpenAI rate limits during eval runs.** I underestimated this. The first eval runs hit 429s repeatedly and the memo writer was the most common failure (probably because it ran last, after the budget was already squeezed). Added retry with exponential backoff and the failure rate dropped to near zero. Should have built this in from the start - it's a known production failure mode and a cheap defense.
@@ -89,16 +87,16 @@ I let some gold-label findings accept either of two verdicts (e.g., a fabricated
 - **Filters and side-by-side viewer in the UI.** A judge wants to filter findings by verdict, severity, source document. Right now they get a flat list. Not hard to build, just didn't fit the timebox.
 - **Optimize per-agent model size.** GPT-4o across the board because I didn't want to fine-tune two variables at once. Some agents (parser, extractor) probably run fine on a smaller model. Quantify with the eval, swap, re-measure.
 
-## Honest assessment
+## Honest self-assessment
 
-I made it through Tier 1 and most of Tier 2, plus the Tier 3 memo agent and a working UI. Citation verification against external authority shipped but in a rougher shape than the rest. Precision is at ~85%, which I'm okay with given where it started but not where I'd want to ship. Recall is suspiciously high and I'd want a second test case to validate it. The eval suite is honest about what it measures and reports cost and latency alongside quality.
+I made it through Tier 1 and most of Tier 2, plus the Tier 3 memo agent and a working UI. Citation verification against external authority shipped but in a rougher shape than the rest - this is my biggest regret by far. Precision was at ~85% but then degraded to ~73% when I did my first pass with the tool, which I'm okay with given where it started but not where I'd want to ship. Recall is suspiciously high and I'd want a second test case to validate it. The eval suite is honest about what it measures and reports cost and latency alongside quality.
 
-The thing I'm proudest of isn't a feature - it's that the manual analysis in stage 2 of NOTES.md actually shaped the build. Most challenge submissions skip the "spend an hour reading the documents" step and jump to code. Doing the recon first meant the agent decomposition emerged from real flaw shapes instead of from a generic AI-pipeline template. The four BS categories I found in the case file map almost exactly onto the four agents that catch them.
+The thing I'm proudest of isn't a feature - it's that the manual analysis in stage 2 of NOTES.md actually shaped the build. Doing the recon first meant the agent decomposition emerged from real flaw shapes instead of from a generic AI-pipeline template. The four BS categories I found in the case file map almost exactly onto the four agents that catch them. This also helped me build intuition that allowed me to spot issues when they arised, which I couldn't have done if I were going into this more blind.
 
-The thing I most want to fix is precision and the citation pillar's shape. Both fixable in a few hours. Neither is fundamentally limited by the architecture.
+The thing I most want to fix is precision and the citation checker. Both fixable in a few hours. Neither is fundamentally limited by the architecture.
 
 ## Open questions I'd take to a domain expert
 
 - **Undisputed fact vs. could-not-verify.** If the MSJ claims "Rivera wasn't wearing PPE" and no supporting document speaks to PPE either way, do we flag it as a soft red flag ("this should be corroborated") or treat it as undisputed fact? I went with "if not directly disputed, treat as undisputed." A judge or trial lawyer would probably have a strong opinion here.
 - **How loud should "could not verify" be?** Right now it sits in the same findings list as `contradicted`. From the schema it's clearly distinct, but from a UI density perspective it might be drowning out the high-signal flags. A real judge user study would settle this fast.
-- **Calibration target.** What confidence threshold should the memo agent use to decide what's "top finding" worthy? Right now I cherry-picked. Real answer comes from watching judges use the tool and seeing what they engage with.
+- **Calibration target.** What confidence threshold should the memo agent use to decide what's "top finding" worthy? Right now I cherry-picked. Real answer comes from talking to or watching judges use the tool and seeing what they engage with.
