@@ -1,9 +1,33 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { analyze } from './api/analyze'
+import ReportView from './components/ReportView'
+import './components/styles.css'
 
 function App() {
   const [report, setReport] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [elapsedMs, setElapsedMs] = useState(0)
+  const startedAtRef = useRef(null)
+  const tickRef = useRef(null)
+
+  useEffect(() => {
+    if (!loading) {
+      if (tickRef.current) {
+        clearInterval(tickRef.current)
+        tickRef.current = null
+      }
+      return
+    }
+    startedAtRef.current = performance.now()
+    setElapsedMs(0)
+    tickRef.current = setInterval(() => {
+      setElapsedMs(performance.now() - startedAtRef.current)
+    }, 100)
+    return () => {
+      if (tickRef.current) clearInterval(tickRef.current)
+    }
+  }, [loading])
 
   const runAnalysis = async () => {
     setLoading(true)
@@ -11,16 +35,8 @@ function App() {
     setReport(null)
 
     try {
-      const response = await fetch('http://localhost:8002/analyze', {
-        method: 'POST',
-      })
-
-      if (!response.ok) {
-        throw new Error(`Server responded with ${response.status}`)
-      }
-
-      const data = await response.json()
-      setReport(data.report)
+      const data = await analyze()
+      setReport(data)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -28,8 +44,17 @@ function App() {
     }
   }
 
+  const elapsedSeconds = (elapsedMs / 1000).toFixed(1)
+
   return (
-    <div style={{ maxWidth: '800px', margin: '40px auto', padding: '0 20px', fontFamily: 'system-ui, sans-serif' }}>
+    <div
+      style={{
+        maxWidth: '900px',
+        margin: '40px auto',
+        padding: '0 20px',
+        fontFamily: 'system-ui, sans-serif',
+      }}
+    >
       <h1>BS Detector</h1>
       <p>Legal brief verification pipeline</p>
 
@@ -42,30 +67,31 @@ function App() {
           cursor: loading ? 'not-allowed' : 'pointer',
         }}
       >
-        {loading ? 'Analyzing...' : 'Run Analysis'}
+        {loading ? 'Analyzing...' : report ? 'Run again' : 'Run Analysis'}
       </button>
 
-      {error && (
-        <div style={{ marginTop: '20px', color: 'red' }}>
-          <strong>Error:</strong> {error}
+      {loading && (
+        <div className="spinner-wrap" role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          <span>Analyzing documents... {elapsedSeconds}s</span>
         </div>
       )}
 
-      {report && (
-        <div style={{ marginTop: '20px' }}>
-          <h2>Report</h2>
-          <pre style={{
-            background: '#f5f5f5',
-            padding: '20px',
-            borderRadius: '4px',
-            overflow: 'auto',
-            whiteSpace: 'pre-wrap',
-            wordWrap: 'break-word',
-          }}>
-            {typeof report === 'string' ? report : JSON.stringify(report, null, 2)}
-          </pre>
+      {error && !loading && (
+        <div className="error-box">
+          <strong>Error:</strong> {error}
+          <div style={{ marginTop: '10px' }}>
+            <button
+              onClick={runAnalysis}
+              style={{ padding: '6px 14px', fontSize: '14px', cursor: 'pointer' }}
+            >
+              Try again
+            </button>
+          </div>
         </div>
       )}
+
+      {report && !loading && <ReportView report={report} />}
 
       {report === null && !loading && !error && (
         <p style={{ marginTop: '20px', color: '#888' }}>
