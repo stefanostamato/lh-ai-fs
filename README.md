@@ -4,6 +4,25 @@ Legal briefs lie. Not always intentionally — but they do. They cite cases that
 
 Your task: build an AI pipeline that catches it.
 
+## Why this matters (Stefano's framing)
+
+This sits inside Learned Hand's product DNA: tools judges trust to do more with current resources. Trust is the whole game - one fabricated finding erodes confidence in every other finding the system has produced. The pipeline I'm building reflects that with three load-bearing commitments:
+
+- **Surface, don't decide.** Every flag is a question for a judge with evidence attached. The system flags; the human rules.
+- **Verifiability is the schema.** Every finding carries a `TextSpan` back to the source so a judge can click from a flag straight into the document. A finding that floats free of its source is malformed.
+- **Impartiality.** Both sides' claims get equal skepticism. Prompts speak in role labels, not party names.
+
+The detail on these lives in [AGENTS.md](AGENTS.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## A note on `.claude/` (Stefano's submission)
+
+The `.claude/` folder is committed on purpose. The README says "Use everything. We want to see how you use it" - so I'm showing you the Claude Code workflow I built for this challenge instead of hiding it. If you peek inside you'll find:
+
+- `.claude/commands/` - slash commands I wrote for this project. `/plan` grills me on requirements and writes an executable plan. `/execute` orchestrates subagents to build it task-by-task with TDD. `/verify` audits the result against the plan. `/tweak` patches issues post-build and logs them on the plan. `/eval` runs the eval suite against real LLMs. `/write-notes` appends to my running diary in [NOTES.md](NOTES.md).
+- `.claude/plans/` - the actual plans I executed. Each one has a spec, a task graph, per-task subagent prompts with TDD instructions, and a post-build refinements log. They're the closest thing to a project journal of what I built and why.
+
+Read [AGENTS.md](AGENTS.md) for the code rules I followed and [ARCHITECTURE.md](ARCHITECTURE.md) for where things live and why. [NOTES.md](NOTES.md) is my running diary. The reflection doc at the end of the project pulls from all of these.
+
 ## Setup
 
 ### Docker (recommended)
