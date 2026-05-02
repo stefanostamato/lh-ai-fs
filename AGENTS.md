@@ -20,7 +20,7 @@ These rules apply to every file you write - code comments, command files, docs, 
 These principles come from the README and from Learned Hand's product DNA (impartial, verifiable, judge-supports-not-replaces). They override convenience.
 
 1. **Trust is the currency. Catch real flaws, don't invent them.** Precision matters more than recall *because* one false flag erodes confidence in every other finding the system has produced. A pipeline that flags 3 real flaws is stronger than one that flags 10 with 4 false positives. The court that catches us hallucinating once stops trusting the other 99 findings.
-2. **Express uncertainty. Watch for sycophancy across our own agents.** "Could not verify" beats a fabricated finding. Every flag carries confidence and reasoning. Hallucination is one named failure mode we're graded on - sycophancy is the other: a downstream agent must not strengthen claims an upstream agent marked uncertain. Verifier doesn't trust extractor by default; memo writer cannot upgrade a verdict the verifier left as `unverified`.
+2. **Express uncertainty. Watch for sycophancy across our own agents.** "Could not verify" beats a fabricated finding. Every flag carries confidence and reasoning. Hallucination is one named failure mode we're graded on - sycophancy is the other: a downstream agent must not strengthen claims an upstream agent marked uncertain. Verifier doesn't trust extractor by default; memo writer cannot upgrade a verdict the verifier left as `could_not_verify` or `unsupported`.
 3. **Surface, don't decide.** Every flag is a question for a judge with evidence attached. The system flags; it doesn't rule. No agent prompt is allowed to use advocate voice or recommend an outcome. The output is a clerk's note, not a brief.
 4. **Every finding cites back to the source.** A judge has to be able to jump from any flag into the document in one click. That means a `TextSpan` (document id + offsets) on every finding type, not just citations. A flag without a span is malformed.
 5. **Impartiality.** Treat both sides' claims with equal skepticism. No prompt may bias toward plaintiff or defense. Eval cases should be symmetric where the data allows - if we flag a misquote on one side, we should be ready to flag the same misquote on the other.
@@ -83,7 +83,8 @@ The existing code already follows these. Don't break them.
 - **Default `temperature=0`** for verification work. Determinism beats creativity here.
 - **Always set a timeout.** Cite-check loops that hang are worse than ones that fail.
 - **Log token usage** in dev. Token cost is a metric, not a footnote.
-- **Retries: at most one, on the parse step, not the whole request.** If the model returned malformed JSON once, ask it to fix that specific JSON. Don't re-run the whole prompt.
+- **Retries: at most one, on the parse step, not the whole request.** If the model returned malformed JSON once, ask it to fix that specific JSON. Don't re-run the whole prompt. The rule guards against re-running expensive prompts on flaky parsers, which is why it's strict.
+- **Exception: token-escalating retry on truncation.** When the failure mode is output truncation (the model hit `max_tokens` and the JSON ends mid-string), re-run the *same* prompt with 2x then 4x `max_tokens` - up to 3 attempts total. This is a different failure class from a malformed-but-complete response: the prompt was fine, the budget wasn't. The fix-up-the-JSON retry can't help because the body is structurally incomplete. Keep the rules separate in code: detect truncation by `finish_reason == "length"` (or empty body), escalate tokens; otherwise fall back to the one-shot parse-fix retry above.
 
 ### Test fixtures
 The `mock_llm` fixture is the contract for unit tests:
@@ -104,7 +105,7 @@ Tests use `mock_llm({"extract citations": citation_json_payload})` - keyed by so
 - **Each agent's prompt declares: role, inputs, output schema, what counts as uncertainty.** No "be helpful" filler.
 - **Voice is a clerk writing for a judge, not an advocate.** Prompts must forbid recommending an outcome, picking a side, or upgrading a verdict beyond what the evidence supports. Report what you can verify *and* what you can't, symmetrically. "Find problems" is the wrong frame - the right frame is "report what the source does and doesn't support."
 - **Few-shot examples come from real labeled cases** (your eval data), not invented ones. Where possible, pair examples symmetrically across plaintiff and defense claims so the model doesn't learn one-sided suspicion.
-- **Never tell the model "don't hallucinate".** Tell it "if you cannot verify X from the provided source, return `verdict: 'unverified'` with a `reason` field, and a `span` pointing at the part of the source you checked."
+- **Never tell the model "don't hallucinate".** Tell it "if you cannot verify X from the provided source, return `verdict: 'could_not_verify'` with a `reason` field, and a `span` pointing at the part of the source you checked."
 
 ## 4. React / Vite / JS conventions
 

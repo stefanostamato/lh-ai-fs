@@ -5,6 +5,7 @@ This document contains my raw notes as I work on this coding challenge. It's mea
 
 ### 0. Project setup
 **Time spent:** 15 minutes
+
 I started by reading `README.md` and getting myself familiarized with the project at hand. I also researched Learned Hand as an organization to wrap my head around the product, the problem it tries to solve, and how it delivers value to the users. Here's the gist of my understanding:
 
 #### Learned Hand
@@ -27,6 +28,7 @@ This is a small but important piece of the puzzle - catching BS in the legal bri
 
 ## 1. AI setup
 **Time spent:** 35 minutes.
+
 I spent some time setting up claude code to help me with this project. The goal was to set up a workflow I trust before writing a single line of pipeline code. I'd rather lose 30 minutes upfront on tooling than spend 2 hours later untangling agent slop. I decided to remove `.claude` from `.gitignore` so that my setup can be viewed if desired, given the `README.md` states you want to see how I use AI.
 
 What I built, with the why for each:
@@ -52,6 +54,7 @@ What I built, with the why for each:
 
 ## 2. Initial manual analysis of the case files
 **time spent:** 25 minutes
+
 I decided to spend some time analyzing the case files myself (with AI of course) so that I can build some intuition around the problem we're solving. This should pay dividends later when I'm trying to debug/fine-tune the agent chain performance for this problem. Here's what I found.
 
 ### What's actually in the documents
@@ -111,7 +114,8 @@ Four distinct agents with non-overlapping jobs, which lines up with the Tier-3 s
 - Don't build for "this MSJ is procedurally defective." A real defense brief from a competent firm wouldn't have those tells. The pipeline needs to catch *substantive* BS that survives a well-formatted brief.
 
 ## 3. Refining AI setup based on the review above
-**Time spent: 10 minutes**
+**Time spent:** 10 minutes
+
 After seeing the review above it was clear that AI had a few gaps in understanding when it comes to the real context behind this project - stuff like impartiality, precision > recall - deep, core stuff that speaks to why Learned Hand is valuable. I decided to spend a few minutes tweaking those commands/artifacts to make sure they encapsulate the project and the spirit behind it better. This should pay dividends across the board later on. Here's a high-level overview of what I fine-tuned at this stage.
 
 * `AGENTS.md` - section 1 rewritten: trust-as-currency framing, sycophancy across our own agents, surface-don't-decide, span-on-every-finding, impartiality. Prompt hygiene gained clerk-not-advocate voice rule and symmetric few-shot guidance.
@@ -124,6 +128,111 @@ README.md - short "Why this matters" section threading Learned Hand's framing in
 
 ## 4. Push to git
 **Time spent:** 2 minutes
+
 At this point I felt comfortable with the project structure and decided to push to my fork. Structured this in a few commits:
 * docs: add project rules, architecture, and notes
 * chore: commit .claude/ workflow with explanation in README
+
+## 5. Initial chain build
+**Time spent:** 150 minutes
+* ~75 minutes on the approach and finalizing the plan
+* ~40 minutes for the AI to implement
+* ~20 minutes of manual testing & fixes to get a stable version
+* ~15 minutes of deep manual analysis to understand shortcomings & next steps
+
+I'm thinking of doing a first build of the full agent chain based on everything we've seen so far. I'm ~1.5h in so I have another 4.5h on this. I think this approach gets me the farthest possible the soonest, and leaves enough time for fine-tuning at the end. A couple things worth noting:
+
+### Fold confidence scoring into each agent, rather than build one confidence agent
+Initially I had an insight to make this a specific agent, but really it makes way more sense to have each agent otuput its own confidence score. A separate confidence agent only helps when there's a lot of upstream agents whose confidence and callibration differ, and has the tradeoff of introducing its own bias into the chain. In my experiecne it's best to keep it simple & later add complexity, so I decided to have each agent output its confidence & if needed I'll clean this up later. I suspect the need won't arise - this would be more helpful if we had 5-6 upstream agents and wanted to ensure we're applying confidence uniformly across them.
+
+### Building the legal memo agent right off the bat
+I know README says that the legal memo agent is a stretch goal, but I've built these types of agent chains a few times before and I think I can get there within the 6 hours allowed for this challenge. I decided to build this right away as it'll be cheaper than building as a follow-up later.
+
+### Error modes - always surface gaps and errors as the rule of thumb
+Judge ALWAYS sees gaps/errors explicitly. Humans make decisions, the platform serves them the facts on a silver platter.
+
+### JSON output of LLMs - what to do when things go wrong
+LLMs have gotten good at this but still non-deterministic. Adding a 3-step retry increasing max_tokens at each time - this is the main failure mode I've seen in production a few times and it's a cheap defense against it. I decided to add it in this pass.
+
+### Evals - including cost and latency metrics
+I realized that another couple important metrics to track is how much the chain costs and how long it takes to run in the evals. Just here as a note so I don't forget to include it later.
+
+### Model choice
+GPT 4o across the board for now - I'll fine tune later, there's room to cut costs here on some of the simpler agents.
+
+### UI surface
+For now, just doing the report-rendering core (memo + findings list + verdict pills + click-through) and treating filters / side-by-side viewer / banners as a future improvement.
+
+### Loading state
+This chain call will probably take ~1 minute or so to run. For now I'm leaving it as a spinner, but if time permits I'd love to get some SSE plumbing built so that the user can see progress as it's being made. It's subtle but in my experience this type of UX goes a long way toward building trust with the user - they don't feel it's a black box, they get just enough info to know what it's doing & judge how long it might take.
+
+### Eval gold standard
+Build a structured ground truth JSON from the manual analysis we've done before so that the eval has something to test against. For now I'm allowing groudn truth veredicts to specify more than one (e.g., a fabricated citation could be either unsupported or could_not_verify) - I'll start with the more flexible approach & tighten later once I have more intuition around this.
+
+### Architectural decision - linear pipeline or DAG orchestrator
+The agents are well defined at this point, the main open question is how the orchestrator wires them together. This affects how we test, handle failure isolation, and add future agents - but I'm leaning towards keeping it simple for this task. The options are:
+
+**linear async pipeline, fan-out with `asyncio.gather`**
+* single async function in `pipeline.py` that calls each agent in sequence
+* for fan-out calls (citation path parallel to the factual claims path) use `asyncio.gather`
+* each agent is a pure async function (typed input -> typed output)
+* the orchestrator owns the dependency graph (plain python)
+* *pros:* simple, readable, easy to test, easy to isolate failures, no new dependencies, clear separation
+* *cons:* adding a new agent requires editing pipeline (not registry driven i.e., adding a file to agents/) - if the pipeline grew to 10+ agents we might want to refactor this, no introspection (okay for a deterministic pipeline but as this evolves it'd likely be non-deterministic - e.g., in some cases run some agents, in others run others)
+
+**declarative DAG orchestrator with a Stage registry**
+* structure pipeline stages using a Directed Acyclic Graph (Stage dataclass + Orchestrator class that walks the DAG, schedules concurrent stages, collects results)
+* agents registered via decorator with dependencies
+* *pros:* new agents = new files with `@stage` decorator - no orchestrator changes, more introspection (can dry-run and audit the chain itself - this helps lower CI test costs plus add auditability), cleaner conditional execution later via the decorator
+* *cons:* a lot of complexity for a small project, bigger LoC and testing surface, harder to read (if the team is highly experienced with this it's a non issue, but with a team that's learning the tooling this creates a steep learning curve), and premature abstraction risk - this builds the foundation for a lot more later, but we're not there yet, and who knows what assumptions will change
+
+**decision:** keep it simple, go with the linear async pipeline. We can always add complexity later when the cost is justified. I would potentially weigh this decision differently if I were building the actual Legal Hand product - the tradeoff might be worth it when it accelerates parallel devs working on the pipeline and simplifies future extensibility. Assuming the product is still very much in the iterate quickly phase during early-traction product market fit, this could pay for itself within a few months. But for this coding challenge I'll keep it simple.
+
+### Implementation
+The /execute approach here paid off - claude was able to build the entire thing in one shot in ~30 minutes using parallel subagents. Pretty happy with the AI performance during the build. I think I'm at the edge of my knowledge here of optimizing AI coding agents for speed in an IDE so I think for my own learning I'll start exploring a few different paradigms later to get even more speed gains (cloud agents, creating tasks as github issues that agents pick up and work on - with a PR on each, as the large PRs have been the main bottleneck in my process lately). As far as the results of this coding stage, they were mostly satisfactory but had a few issues (some errors weren't caught until live testing). This includes an oversight on the imports - I wanted it to treat the /backend directory as the "root" path for python but it decided to consider the repo root as the python root. This caused a mismatch in what imports needed to be in local vs. docker environments, which was unideal and should have been caught early. Quick fix though. This is something I've faced in many projects and generally the mitigation I've adopted is to invest in e2e tests. I think another approach I need to dig deeper into is the browser integration in vscode - letting claude verify its own outputs and debug/fix from there.
+
+### Shortcomings to overcome
+* Hitting OpenAI rate limit often - considering adding retry with backoff logic on 429 responses
+* Memo writer fails to write - possibly a downstream consequence of the issue above
+* We're not yet actually checking the cited cases - only cross-document. This feels like an important part of the project and are entirely missing.
+* Running eval as a claude command is finnicky - I'd like to change this to a fully deterministic python command and document in README as requested in the challenge spec, plus a /eval command around it that also analyzes the output. The python script should also output verbose reports so that they can be analyzed adequately.
+* Some claims are supported by text that spans multiple TextSpans - currently the pipeline flags as unsupported if it's not within one text span.
+* Recall is strong, precision is the bottleneck - we're flagging 22 findings when there should really only be 11. This is precisely what we want to avoid - fine tuning is needed urgently.
+* One missed finding (labels outline 11 expected, our findings matched 10)
+
+## 6. Urgent improvements
+4pm. I still have about 2h left. Now I need to address the main issues from this first chain run.
+
+**First wave:** ~30 minutes
+* Add retries with exponential backoff on 429 to reduce agent error rates
+* Refactor eval into a python file with a documented how to run in the README to run the eval and produce a verbose report, and refactor my /eval claude skill to interpret this report
+
+**Second wave: ~50 minutes**
+* Fix false positives from consistency checker - we're surfacing findings that say "this is consistent" but our eval pipeline sees "huh a finding" - so these should really be suppressed. We can keep raising findings for consistent if we want, but the verifier needs to distinguish these from actual findings. Or the eval harness needs to evolve to consider the true negatives (finding claims that are consistent & backable). Also, facts raised by one document and not disputed or corroborated by other documents return could_not_verify finding which maps as a FP but it isn't (it's really an undisputed fact at that point). There's also a duplicate issue - we're raising March 14 date twice, once it's counted correctly but the second time counts as a false positive.
+
+**Third wave: ~15 minutes
+* We're calling "unsupported" claims that are supported but the supporting content spans multiple lines (limitation of how I designed the textspan) - need to fix - should improve precision
+* Our pipeline is correctly catching authorities that are cited, but the AI-generated eval labels were missing these - should improve precision
+
+### Decision to move on
+At this point we're at ~85% precision but I'm running out of time, only 30 mins left. I need to move on. There's a lot to improve but I'm satisfied with the trajectory over these improvements - in an hour and a bit we went from ~50% precision to ~85%, not too bad.
+
+## 7. Add actual case citation checker
+Started planning this in parallel with the tweaks in the phase above. Given time crunch I went with the very simplest approach - it creates a big agent with a fat tool that does a lot of things. If I had more time I would have split this into a more reasonable shape.
+
+## Future to-do's
+I'm keeping a running list of stuff I still need to do so I don't forget.
+* Add actual case citation checker (go beyond documents here)
+* Format output and deliverables according to README
+* Optimize model size per agent (quantify with evals)
+* Improve UI with filters, side-by-side viewer, banners
+* Improve loading state with event streaming
+* Refine eval gold standard - especially check if allowing multiple veredicts is good enough
+
+## Reflections / questions
+* Undisputed fact vs. could not verify
+    * Let's say the claim says the worker was not using PPE
+    * The police report or medical report should probably speak to this
+    * In the case they don't, do we take the claim as undisputed fact, or do we surface as a "soft red flag" hey this should be corroborated by other documents if true but wasn't, so pay attention?
+    * For now I went with "if not disputed directly by a document, it's assumed this is an undisputed fact" - but this would be a question I'd ask a domain expert if I were building the real product.
+

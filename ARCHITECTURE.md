@@ -60,11 +60,13 @@ backend/
 │
 ├── agents/                   # One agent per file. Each exports a single callable.
 │   ├── __init__.py
+│   ├── brief_parser.py       # Deterministic, no LLM. Segments the brief into paragraphs with offsets.
+│   ├── record_parser.py      # Deterministic, no LLM. Same job for each record document.
 │   ├── citation_extractor.py
-│   ├── citation_verifier.py
-│   ├── quote_checker.py
-│   ├── consistency_checker.py
-│   └── memo_writer.py        # Tier 3: judicial memo. Clerk's voice, not advocate. Cannot upgrade verdicts.
+│   ├── claim_extractor.py
+│   ├── citation_verifier.py  # Also handles quote-accuracy - if a cite carries a verbatim quote, the verifier checks the source.
+│   ├── cross_doc_checker.py  # Consistency across the brief and the records.
+│   └── memo_writer.py        # Judicial memo. Clerk's voice, not advocate. Cannot upgrade verdicts.
 │
 ├── pipeline.py               # Orchestrator. Wires agents together. Owns the dependency graph.
 │                             # Knows about agents; agents do not know about it.
@@ -107,35 +109,51 @@ frontend/src/
 
 ```mermaid
 flowchart LR
-    docs[documents/*.txt] --> extractor[citation_extractor]
-    extractor --> verifier[citation_verifier]
-    docs --> quotes[quote_checker]
-    docs --> consistency[consistency_checker]
-    verifier --> memo[memo_writer]
-    quotes --> memo
-    consistency --> memo
-    memo --> report[Report JSON]
-    report --> api[POST /analyze response]
+    api[POST /analyze<br/>no body] --> loader[case_loader<br/>load_default_case]
+    loader -->|DocumentSet| pipe[run_pipeline]
+    pipe --> bp[Brief Parser<br/>deterministic]
+    pipe --> rp[Record Parser<br/>deterministic, per record]
+    bp -->|ParsedBrief| ce[Citation Extractor]
+    bp -->|ParsedBrief| cle[Claim Extractor]
+    ce -->|ExtractedCitation per cite| cv[Citation Verifier<br/>uses CaseLawLookup]
+    cle -->|ExtractedClaim per claim| cdc[Cross-Doc Checker]
+    rp -->|ParsedRecord per doc| cdc
+    cl[CaseLawLookup<br/>+ ParametricLLMLookup] -.->|injected| cv
+    cv -->|CitationFinding[]| rank[rank_findings<br/>deterministic]
+    cdc -->|ConsistencyFinding[]| rank
+    rank -->|top-N FindingRef[]| memo[Judicial Memo]
+    rank --> assemble
+    memo --> assemble[Report assembly<br/>in pipeline.py]
+    assemble -->|Report| api
+    api --> ui[Frontend ReportView]
+    api --> eval[Eval harness<br/>builds DocumentSet from case JSON]
 ```
 
-Each box is a single agent module. Each arrow is a typed Pydantic payload.
+Each solid box is an agent module or a deterministic helper. Each arrow is a typed Pydantic payload. The dashed arrow is dependency injection - `CaseLawLookup` is an interface the verifier holds a reference to. Quote-accuracy is not its own agent: when a citation carries a verbatim quoted span, the Citation Verifier checks the lookup result against it as part of its verdict.
 
 ### 3.2 The pipeline is a function, not a framework
 
-`backend/pipeline.py` exposes one async function. Call it `run_pipeline(documents: dict[str, str]) -> Report`. It composes agent calls. It does not implement a generic agent framework, a DAG executor, or a plugin system. We're shipping one pipeline, not a platform.
+`backend/pipeline.py` exposes one async function: `run_pipeline(doc_set: DocumentSet) -> Report`. It composes agent calls. It does not implement a generic agent framework, a DAG executor, or a plugin system. We're shipping one pipeline, not a platform.
 
 ```python
 # Sketch - actual signatures live in schemas.py
-async def run_pipeline(documents: dict[str, str]) -> Report:
-    citations = await extract_citations(documents["motion_for_summary_judgment"])
-    verifications = await asyncio.gather(*[verify_citation(c) for c in citations])
-    quotes = await check_quotes(documents["motion_for_summary_judgment"], citations)
-    consistency = await check_consistency(documents)
-    memo = await write_memo(verifications, quotes, consistency)
+async def run_pipeline(doc_set: DocumentSet) -> Report:
+    parsed_brief = parse_brief(doc_set.brief())
+    parsed_records = [parse_record(r) for r in doc_set.records()]
+    citations, claims = await asyncio.gather(
+        extract_citations(parsed_brief),
+        extract_claims(parsed_brief),
+    )
+    citation_findings, consistency_findings = await asyncio.gather(
+        asyncio.gather(*[verify_citation(c, lookup) for c in citations]),
+        asyncio.gather(*[check_claim(cl, parsed_records) for cl in claims]),
+    )
+    top = rank_findings(citation_findings, consistency_findings, n=5)
+    memo = await write_memo(top, partial_failures)
     return Report(...)
 ```
 
-Parallelism comes from `asyncio.gather`. Not a custom scheduler. If the pipeline ever gets complex enough that this hurts, *then* introduce structure.
+Parallelism comes from `asyncio.gather` plus a single `asyncio.Semaphore(5)` cap on in-flight LLM calls. Not a custom scheduler. If the pipeline ever gets complex enough that this hurts, *then* introduce structure.
 
 ### 3.3 Agents are pure-ish functions of typed inputs to typed outputs
 
@@ -159,19 +177,128 @@ If you find yourself importing `openai` in an agent, stop and add the helper to 
 
 ### 3.5 Inter-agent contracts are Pydantic, not dicts
 
-`schemas.py` is load-bearing. Every payload that crosses an agent boundary is a Pydantic model with `model_config = {"extra": "forbid"}`. Sketches (exact fields TBD by `/plan`):
+`schemas.py` is load-bearing. Every payload that crosses an agent boundary is a Pydantic model with `model_config = ConfigDict(extra="forbid")`. The locked schemas:
 
-- `TextSpan(document_id: str, start: int, end: int)` - document offsets, not vibes.
-- `Citation(source_text: str, cite: str, proposition: str, span: TextSpan)`
-- `CitationVerification(citation: Citation, verdict: Literal["supported", "contradicted", "unverified"], confidence: float, reasoning: str, evidence_quote: str | None, evidence_span: TextSpan | None)`
-- `QuoteCheck(claimed_quote: str, claimed_span: TextSpan, source_span: TextSpan | None, verdict: ..., confidence: float, reasoning: str)`
-- `ConsistencyFinding(claim: str, claim_span: TextSpan, contradicting_spans: list[TextSpan], verdict: ..., confidence: float, reasoning: str)`
-- `JudicialMemo(text: str, top_findings: list[FindingRef])` - `FindingRef` points at a finding by id, never restates a verdict the verifier didn't make.
-- `Report(citations: list[CitationVerification], quotes: list[QuoteCheck], consistency: list[ConsistencyFinding], memo: JudicialMemo, meta: ReportMeta)`
+```python
+Verdict = Literal["supported", "contradicted", "unsupported", "could_not_verify"]
+DocumentId = str  # type alias for clarity at call sites; no value constraint -
+                  # the active DocumentSet is the source of truth
 
-**Invariant: every finding is traceable to a source range.** Each finding type carries at least one `TextSpan` pointing at where in which document the claim lives, plus (when verified against a source) a span pointing at the supporting or contradicting text. A finding without a usable span is malformed and should fail validation - the UI's job is to let a judge click through to the document, and we can't do that without offsets.
+class DocumentRole(str, Enum):
+    BRIEF = "brief"            # the document being audited
+    RECORD = "record"          # supporting documents the brief is checked against
 
-Field order in finding models is deliberate: source ref first, then evidence, then verdict, then reasoning, then confidence. That's the order a judge scans. Schemas are read top-down; we mirror the human reading order.
+class DocumentInput(BaseModel):
+    document_id: DocumentId    # caller-chosen, unique within the set
+    display_name: str          # what the UI shows ("Police Report")
+    role: DocumentRole
+    text: str
+
+class DocumentSet(BaseModel):
+    """Pipeline input envelope. Exactly one BRIEF, N RECORDs, unique ids."""
+    documents: list[DocumentInput]
+    # @model_validator enforces exactly-one-brief and unique-ids
+    def brief(self) -> DocumentInput: ...
+    def records(self) -> list[DocumentInput]: ...
+    def by_id(self, document_id: DocumentId) -> DocumentInput: ...
+    def has_id(self, document_id: DocumentId) -> bool: ...
+
+class TextSpan(BaseModel):
+    document_id: DocumentId    # must reference a doc in the active DocumentSet
+    start: int                 # char offset, inclusive
+    end: int                   # char offset, exclusive
+    excerpt: str               # the text at [start:end], stored for UI rendering
+
+class ParagraphSpan(BaseModel):
+    document_id: DocumentId
+    paragraph_index: int       # 0-based
+    span: TextSpan
+
+class ParsedBrief(BaseModel):
+    document_id: DocumentId
+    raw_text: str
+    paragraphs: list[ParagraphSpan]
+
+class ParsedRecord(BaseModel):
+    document_id: DocumentId
+    display_name: str          # carried forward so cross-doc + UI don't re-derive
+    raw_text: str
+    paragraphs: list[ParagraphSpan]
+
+class ExtractedCitation(BaseModel):
+    cite: str                          # "Privette v. Superior Court, 5 Cal.4th 689 (1993)"
+    proposition: str                   # what the brief claims this authority supports
+    quoted_language: str | None        # verbatim quote attributed to the case, if any
+    claim_span: TextSpan               # where in the brief this citation appears
+
+class ExtractedClaim(BaseModel):
+    claim_text: str                    # "the incident occurred on March 14, 2021"
+    claim_span: TextSpan               # where in the brief this claim appears
+
+class CaseLookupResult(BaseModel):
+    found: bool
+    canonical_cite: str | None
+    holding_text: str | None
+    quoted_text_match: bool | None     # null = no quote to check; bool = match result
+    source_url: str | None
+    lookup_status: Literal["found", "not_found", "ambiguous", "lookup_failed"]
+    notes: str | None
+
+class CitationFinding(BaseModel):
+    citation: ExtractedCitation
+    verdict: Verdict
+    confidence: float                  # [0.0, 1.0]
+    reasoning: str
+    evidence_quote: str | None
+    evidence_span: TextSpan | None     # null when verdict is could_not_verify
+    lookup: CaseLookupResult           # provenance: where the verifier looked
+
+class ConsistencyFinding(BaseModel):
+    claim: ExtractedClaim
+    verdict: Verdict
+    confidence: float
+    reasoning: str
+    evidence_quote: str | None
+    evidence_span: TextSpan | None     # null when verdict is could_not_verify
+    checked_documents: list[DocumentId]
+
+class FindingRef(BaseModel):
+    finding_type: Literal["citation", "consistency"]
+    finding_index: int                 # index into report.citations or report.consistency
+
+class JudicialMemo(BaseModel):
+    text: str                          # one paragraph, clerk voice
+    top_findings: list[FindingRef]     # references only; never restates verdicts
+    partial_failure_note: str | None   # "Citation verification failed for 2 of 10 cites." etc.
+
+class PartialFailure(BaseModel):
+    agent: str
+    error: str
+
+class TokenUsage(BaseModel):
+    prompt: int
+    completion: int
+
+class ReportMeta(BaseModel):
+    model: str
+    elapsed_ms: int
+    token_usage: TokenUsage
+    partial_failures: list[PartialFailure]
+
+class Report(BaseModel):
+    consistency: list[ConsistencyFinding]
+    citations: list[CitationFinding]
+    memo: JudicialMemo
+    meta: ReportMeta
+```
+
+**Verdict vocab is exactly four values.** `supported` and `contradicted` are the affirmative outcomes. `unsupported` means the source exists but doesn't say what the brief claims. `could_not_verify` means the verifier couldn't reach the source at all - lookup failed, ambiguous result, agent crash. The split matters: `unsupported` is a finding (the brief is wrong about its source), `could_not_verify` is a confession (we can't tell). The memo treats them differently and so should the UI.
+
+**`DocumentId` is `str`, not a `Literal`.** The schema is agnostic to which documents exist - the active `DocumentSet` is the runtime source of truth. A `TextSpan` whose `document_id` doesn't match any document in the set is caught at the orchestrator boundary (`_safe_call` in `pipeline.py`) and converted to a `could_not_verify` finding rather than a Pydantic error. The agent hallucinated a doc; that's a finding, not a crash. See §3.11 for the full `DocumentSet` story.
+
+**Invariant: every finding is traceable to a source range.** Each finding type carries a `claim_span` (where in the brief the claim lives) plus (when there's evidence) an `evidence_span` pointing at the supporting or contradicting text. A finding with `verdict != "could_not_verify"` and no `evidence_span` is malformed - the UI's job is to let a judge click through to the document, and we can't do that without offsets.
+
+Field order in finding models is deliberate: claim location first, then evidence, then verdict, then reasoning, then confidence. That's the order a judge scans. Schemas are read top-down; we mirror the human reading order.
 
 Two consequences:
 - The `/analyze` response schema is `Report.model_json_schema()`. One source of truth.
@@ -179,15 +306,15 @@ Two consequences:
 
 ### 3.6 Confidence, uncertainty, and verifiability are first-class
 
-Every verdict carries a `confidence: float`, a `reasoning: str`, and a `TextSpan` that pins the claim to the source. "Unverified" is a real verdict, not an error. The eval suite measures hallucination rate by counting findings that don't have evidence in the source - so an agent that *can't* find evidence has to say so, not invent it.
+Every verdict carries a `confidence: float`, a `reasoning: str`, and a `TextSpan` that pins the claim to the source. `could_not_verify` is a real verdict, not an error - and `unsupported` (source exists, doesn't say what the brief claims) is distinct from `could_not_verify` (we couldn't reach the source). The eval suite measures hallucination rate by counting findings that don't have evidence in the source, so an agent that *can't* find evidence has to say so, not invent it.
 
-A finding without a span is malformed - validation should reject it. The whole product premise (a judge trusts this because they can verify it in seconds) collapses if we let findings float free of the document.
+A finding with `verdict != "could_not_verify"` and no `evidence_span` is malformed - validation should reject it. The whole product premise (a judge trusts this because they can verify it in seconds) collapses if we let findings float free of the document.
 
 ### 3.6.1 Sycophancy across our own agents
 
 Sycophancy is one of the BS modes named in the brief - and it's a risk *inside* our pipeline, not just in the documents we analyze. Two design rules to prevent it:
 
-- **Downstream agents cannot upgrade upstream verdicts.** The memo writer sees `unverified` and may not turn it into `contradicted` in the prose. Verdict promotion is a schema-level invariant - assert it in tests.
+- **Downstream agents cannot upgrade upstream verdicts.** The memo writer sees `could_not_verify` or `unsupported` and may not turn it into `contradicted` in the prose. Verdict promotion is a schema-level invariant - assert it in tests.
 - **Verifier agents do not see the extractor's confidence.** They re-derive their own confidence from the source. If we pipe upstream confidence forward, downstream agents anchor on it and the chain agrees with itself by default.
 
 ### 3.6.2 Impartiality
@@ -233,40 +360,76 @@ The fixture is keyed by a substring of the prompt so a single test can serve a m
 2. Move the `fetch` to `src/api/analyze.js`.
 3. *Then* consider whether anything else (state library, router, styling system) is justified. For a single-screen tool, it usually isn't.
 
+### 3.10 `rank_findings` is a deterministic helper, not an agent
+
+The memo writer doesn't see every finding - that's how you get prose that lists ten things and emphasizes none. `rank_findings` is a pure-Python function in `pipeline.py` (not an agent, no LLM call) that takes the full list of citation and consistency findings and returns the top-N as `FindingRef`s for the memo writer.
+
+The ranking is `verdict_weight × confidence`, where `verdict_weight` orders the verdict vocab roughly by "how alarming is this to a judge": `contradicted` > `unsupported` > `could_not_verify` > `supported`. Within a verdict bucket, higher confidence wins. N is a constant (currently 5) at the top of `pipeline.py`, not a config knob.
+
+Why not an agent: ranking is a deterministic policy, not a judgment call. Pushing it into an LLM would add cost, latency, and a non-reproducible step for no upside. The memo writer still chooses *what to say* about the top-N - that's the LLM's job. Picking the top-N is arithmetic.
+
+### 3.11 The `DocumentSet` abstraction
+
+The pipeline takes a `DocumentSet`, not a `dict[str, str]`. A `DocumentSet` is one BRIEF + N RECORDs, validated at construction time (exactly one brief, unique `document_id`s). Schemas above show the shape.
+
+Three rules fall out of this:
+
+- **`DocumentId = str`, not `Literal[...]`.** The schema is agnostic to which documents exist. Adding or swapping a document is a runtime concern, not a type-level one. A span pointing at a `document_id` that isn't in the active `DocumentSet` is caught at the orchestrator boundary and downgraded to a `could_not_verify` finding (the agent hallucinated a doc; that's a finding, not a crash).
+- **`case_loader.load_default_case()` is the only place specific filenames live.** The four Rivera files (`motion_for_summary_judgment`, `police_report`, `medical_records_excerpt`, `witness_statement`) are referenced by name exactly once in the codebase: in `backend/case_loader.py`, where each is read off disk and assigned a role and display name. Swapping cases is a `case_loader` edit, not a schema or agent edit.
+- **Agents never reference `document_id`s by literal value.** No `if doc_id == "police_report":` anywhere. Agents iterate over `doc_set.records()` or take `ParsedRecord`s as input. This is a grep-enforceable rule - the eval acceptance criteria include a grep that fails if a literal filename leaks into agent code.
+
+`POST /analyze` takes no body in v1. The handler calls `case_loader.load_default_case()` and passes the `DocumentSet` to `run_pipeline`. The pipeline is internally agnostic to where the set came from, so a future request-body code path is an additive change in `main.py` only - no schema or agent changes. We left the door open without building the door.
+
+The eval harness builds its own `DocumentSet` from a case-file JSON (`evals/cases/<id>.json` references text files by path and assigns role + display name) and calls `run_pipeline` directly, bypassing `case_loader`. Same pipeline code, different document set. That's the whole point of the abstraction: it's there to keep the pipeline honest about not caring which docs it gets.
+
 ## 4. The shape of `POST /analyze`
 
-Concrete enough to build to. The plan refines field names, this doc fixes the shape:
+Concrete enough to build to. The plan refines field names, this doc fixes the shape.
 
-**Request:** no body today. If config sneaks in (e.g. which model to use), it goes in a body, not a query string.
+**Request:** no body in v1. The backend chooses the document set via `case_loader.load_default_case()` (see §3.11). The pipeline is internally agnostic - it takes a `DocumentSet` - so adding a request-body code path later is an additive change in `main.py` only. We're not building that today.
 
-**Response:** `Report` (Pydantic model). Roughly:
+**Response:** `Report` (Pydantic model). Quote-accuracy lives inside the citation finding (no separate `quotes` array - if a citation carries a verbatim quoted span, the verifier checks it as part of its verdict). Roughly:
 
 ```json
 {
-  "citations": [
+  "consistency": [
     {
-      "claim_span": { "document_id": "motion_for_summary_judgment", "start": 1843, "end": 1922 },
-      "cite": "Smith v. Jones, 123 F.3d 456 (9th Cir. 1999)",
-      "proposition": "...",
-      "evidence_quote": "...",
-      "evidence_span": { "document_id": "police_report", "start": 401, "end": 488 },
+      "claim": { "claim_text": "...", "claim_span": { "document_id": "motion_for_summary_judgment", "start": 2104, "end": 2183, "excerpt": "..." } },
       "verdict": "contradicted",
+      "confidence": 0.88,
       "reasoning": "...",
-      "confidence": 0.82
+      "evidence_quote": "...",
+      "evidence_span": { "document_id": "police_report", "start": 401, "end": 488, "excerpt": "..." },
+      "checked_documents": ["police_report", "medical_records_excerpt", "witness_statement"]
     }
   ],
-  "quotes": [...],
-  "consistency": [...],
-  "memo": { "text": "...", "top_findings": [...] },
+  "citations": [
+    {
+      "citation": {
+        "cite": "Smith v. Jones, 123 F.3d 456 (9th Cir. 1999)",
+        "proposition": "...",
+        "quoted_language": "...",
+        "claim_span": { "document_id": "motion_for_summary_judgment", "start": 1843, "end": 1922, "excerpt": "..." }
+      },
+      "verdict": "unsupported",
+      "confidence": 0.82,
+      "reasoning": "...",
+      "evidence_quote": "...",
+      "evidence_span": null,
+      "lookup": { "found": true, "canonical_cite": "...", "holding_text": "...", "quoted_text_match": false, "source_url": null, "lookup_status": "found", "notes": null }
+    }
+  ],
+  "memo": { "text": "...", "top_findings": [{ "finding_type": "consistency", "finding_index": 0 }], "partial_failure_note": null },
   "meta": {
     "model": "gpt-4o",
     "elapsed_ms": 12340,
-    "token_usage": { "prompt": 12000, "completion": 1800 }
+    "token_usage": { "prompt": 12000, "completion": 1800 },
+    "partial_failures": []
   }
 }
 ```
 
-Field order is the order a judge reads: claim location, evidence, verdict, reasoning, confidence. Every finding carries at least a `claim_span` and (when applicable) an `evidence_span`. The UI uses these to let the judge click straight into the document. Exact field names are decided in `/plan`. Typed, structured, uncertainty-aware, source-traceable - decided here.
+Field order in each finding is the order a judge reads: claim location, evidence, verdict, reasoning, confidence. Every finding carries a `claim_span` and (when verdict isn't `could_not_verify`) an `evidence_span`. The UI uses these to let the judge click straight into the document. Typed, structured, uncertainty-aware, source-traceable - decided here.
 
 ## 5. Things this architecture deliberately doesn't have
 

@@ -18,3 +18,4 @@ dist/
 
 # Claude (committed - see README for why)
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
